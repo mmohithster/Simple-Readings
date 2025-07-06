@@ -59,7 +59,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
       try {
         setProgress(((i + 1) / affirmationLines.length) * 70); // 70% for individual clips
         
-        const response = await fetch('http://localhost:8880/', {
+        const response = await fetch('http://localhost:8880/v1/audio/speech', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -181,7 +181,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
       console.error('Generation failed:', error);
       toast({
         title: "Generation Failed",
-        description: "Please check if Kokoro TTS is running on localhost:8880",
+        description: "Please check if Kokoro TTS is running on localhost:8880. You can also visit localhost:8880/web for debugging.",
         variant: "destructive"
       });
     } finally {

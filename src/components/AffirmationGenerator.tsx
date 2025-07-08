@@ -90,7 +90,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
     return audioClips;
   };
 
-  const removeInternalPauses = (audioBuffer: AudioBuffer, maxPauseLength: number = 0.8): AudioBuffer => {
+  const removeInternalPauses = (audioBuffer: AudioBuffer, maxPauseLength: number = 0.4): AudioBuffer => {
     const audioContext = new AudioContext();
     const inputData = audioBuffer.getChannelData(0);
     const sampleRate = audioBuffer.sampleRate;

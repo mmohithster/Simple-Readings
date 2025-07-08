@@ -18,7 +18,7 @@ const AffirmationGenerator = () => {
   const [affirmations, setAffirmations] = useState('');
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
     model: 'kokoro',
-    voice: 'af_jessica(1)+af_v0nicole(8)+af_v0(1)',
+    voice: 'af_bella(3)+af_v0nicole(6)+af_kore(1)',
     speed: 0.9
   });
   const [silenceGap, setSilenceGap] = useState(2.5);
@@ -373,7 +373,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
                     <div className="flex gap-2">
                       <Button
                         onClick={togglePlayback}
-                        variant="outline"
+                        variant="secondary"
                         size="sm"
                         className="flex-1"
                       >
@@ -383,7 +383,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
                       
                       <Button
                         onClick={handleDownload}
-                        className="flex-1 bg-gradient-secondary"
+                        className="flex-1 bg-gradient-primary hover:shadow-glow"
                         size="sm"
                       >
                         <Download className="w-4 h-4 mr-2" />

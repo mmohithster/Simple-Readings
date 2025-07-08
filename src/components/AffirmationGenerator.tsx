@@ -296,6 +296,20 @@ I am completely worthy of all the magnificence flowing toward me.`;
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
+                  <Label htmlFor="voice">Voice</Label>
+                  <Input
+                    id="voice"
+                    type="text"
+                    placeholder="af_jessica(1)+af_v0nicole(8)+af_v0(1)"
+                    value={voiceSettings.voice}
+                    onChange={(e) => setVoiceSettings(prev => ({
+                      ...prev,
+                      voice: e.target.value
+                    }))}
+                  />
+                </div>
+                
+                <div>
                   <Label htmlFor="speed">Speech Speed</Label>
                   <Input
                     id="speed"

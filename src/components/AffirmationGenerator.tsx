@@ -90,15 +90,52 @@ I am completely worthy of all the magnificence flowing toward me.`;
     return audioClips;
   };
 
+  const removeInternalPauses = (audioBuffer: AudioBuffer, maxPauseLength: number = 0.8): AudioBuffer => {
+    const audioContext = new AudioContext();
+    const inputData = audioBuffer.getChannelData(0);
+    const sampleRate = audioBuffer.sampleRate;
+    const silenceThreshold = 0.01; // Volume threshold for silence detection
+    const maxPauseSamples = maxPauseLength * sampleRate;
+    
+    const outputData: number[] = [];
+    let currentSilenceLength = 0;
+    
+    for (let i = 0; i < inputData.length; i++) {
+      const sample = inputData[i];
+      const isSilent = Math.abs(sample) < silenceThreshold;
+      
+      if (isSilent) {
+        currentSilenceLength++;
+        // Only add silence if it's shorter than max allowed pause
+        if (currentSilenceLength <= maxPauseSamples) {
+          outputData.push(sample);
+        }
+      } else {
+        currentSilenceLength = 0;
+        outputData.push(sample);
+      }
+    }
+    
+    // Create new audio buffer with reduced pauses
+    const outputBuffer = audioContext.createBuffer(1, outputData.length, sampleRate);
+    const outputChannel = outputBuffer.getChannelData(0);
+    for (let i = 0; i < outputData.length; i++) {
+      outputChannel[i] = outputData[i];
+    }
+    
+    return outputBuffer;
+  };
+
   const combineAudioClips = async (audioClips: Blob[]): Promise<Blob> => {
     const audioContext = new AudioContext();
     const audioBuffers: AudioBuffer[] = [];
     
-    // Decode all audio clips
+    // Decode all audio clips and remove internal pauses
     for (const clip of audioClips) {
       const arrayBuffer = await clip.arrayBuffer();
       const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      audioBuffers.push(audioBuffer);
+      const processedBuffer = removeInternalPauses(audioBuffer);
+      audioBuffers.push(processedBuffer);
     }
     
     // Calculate total duration with silence gaps

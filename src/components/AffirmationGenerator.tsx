@@ -26,6 +26,7 @@ const AffirmationGenerator = () => {
   const [progress, setProgress] = useState(0);
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [affirmationTimings, setAffirmationTimings] = useState<Array<{text: string, start: number, end: number}>>([]);
   const { toast } = useToast();
 
   const defaultAffirmations = `I am fully ready for the radiant possibilities of July 2025.
@@ -126,9 +127,10 @@ I am completely worthy of all the magnificence flowing toward me.`;
     return outputBuffer;
   };
 
-  const combineAudioClips = async (audioClips: Blob[]): Promise<Blob> => {
+  const combineAudioClips = async (audioClips: Blob[], affirmationLines: string[]): Promise<Blob> => {
     const audioContext = new AudioContext();
     const audioBuffers: AudioBuffer[] = [];
+    const timings: Array<{text: string, start: number, end: number}> = [];
     
     // Decode all audio clips and remove internal pauses
     for (const clip of audioClips) {
@@ -147,11 +149,21 @@ I am completely worthy of all the magnificence flowing toward me.`;
     const outputBuffer = audioContext.createBuffer(1, totalDuration * sampleRate, sampleRate);
     const outputData = outputBuffer.getChannelData(0);
     
-    // Combine audio with silence gaps
+    // Combine audio with silence gaps and track timings
+    let currentTime = 0;
     let currentOffset = 0;
     for (let i = 0; i < audioBuffers.length; i++) {
       const buffer = audioBuffers[i];
       const inputData = buffer.getChannelData(0);
+      const startTime = currentTime;
+      const endTime = currentTime + buffer.duration;
+      
+      // Track timing for .srt generation
+      timings.push({
+        text: affirmationLines[i].trim(),
+        start: startTime,
+        end: endTime
+      });
       
       // Copy audio data
       for (let j = 0; j < inputData.length; j++) {
@@ -159,14 +171,19 @@ I am completely worthy of all the magnificence flowing toward me.`;
       }
       
       currentOffset += inputData.length;
+      currentTime = endTime;
       
       // Add silence gap (except after last clip)
       if (i < audioBuffers.length - 1) {
         const silenceSamples = silenceGap * sampleRate;
         // outputData is already initialized to zeros (silence)
         currentOffset += silenceSamples;
+        currentTime += silenceGap;
       }
     }
+    
+    // Store timings for .srt generation
+    setAffirmationTimings(timings);
     
     // Convert back to WAV blob
     return audioBufferToWav(outputBuffer);
@@ -235,7 +252,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
       const audioClips = await generateAudioClips(lines);
       
       setProgress(80);
-      const combinedAudio = await combineAudioClips(audioClips);
+      const combinedAudio = await combineAudioClips(audioClips, lines);
       
       setProgress(100);
       const audioUrl = URL.createObjectURL(combinedAudio);
@@ -259,6 +276,21 @@ I am completely worthy of all the magnificence flowing toward me.`;
     }
   };
 
+  const formatTime = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+  };
+
+  const generateSrtContent = (): string => {
+    return affirmationTimings.map((timing, index) => {
+      return `${index + 1}\n${formatTime(timing.start)} --> ${formatTime(timing.end)}\n${timing.text}\n`;
+    }).join('\n');
+  };
+
   const handleDownload = () => {
     if (generatedAudio) {
       const a = document.createElement('a');
@@ -267,6 +299,23 @@ I am completely worthy of all the magnificence flowing toward me.`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+    }
+  };
+
+  const handleDownloadSrt = () => {
+    if (affirmationTimings.length > 0) {
+      const srtContent = generateSrtContent();
+      const blob = new Blob([srtContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'affirmations.srt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      URL.revokeObjectURL(url);
     }
   };
 
@@ -407,25 +456,38 @@ I am completely worthy of all the magnificence flowing toward me.`;
                       className="hidden"
                     />
                     
-                    <div className="flex gap-2">
+                    <div className="space-y-2">
                       <Button
                         onClick={togglePlayback}
                         variant="secondary"
                         size="sm"
-                        className="flex-1"
+                        className="w-full"
                       >
-                        {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                        {isPlaying ? <Pause className="w-4 h-4 mr-2" /> : <Play className="w-4 h-4 mr-2" />}
                         {isPlaying ? 'Pause' : 'Preview'}
                       </Button>
                       
-                      <Button
-                        onClick={handleDownload}
-                        className="flex-1 bg-gradient-primary hover:shadow-glow"
-                        size="sm"
-                      >
-                        <Download className="w-4 h-4 mr-2" />
-                        Download
-                      </Button>
+                      <div className="flex gap-2">
+                        <Button
+                          onClick={handleDownload}
+                          className="flex-1 bg-gradient-primary hover:shadow-glow"
+                          size="sm"
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          Audio
+                        </Button>
+                        
+                        <Button
+                          onClick={handleDownloadSrt}
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          disabled={affirmationTimings.length === 0}
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          .SRT
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}

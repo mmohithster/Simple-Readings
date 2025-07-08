@@ -65,7 +65,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            text: affirmation,
+            input: affirmation,
             ...voiceSettings
           })
         });

@@ -90,11 +90,56 @@ I am completely worthy of all the magnificence flowing toward me.`;
     return audioClips;
   };
 
-  const createSilenceBlob = (durationSeconds: number): Blob => {
-    const sampleRate = 44100;
-    const numSamples = sampleRate * durationSeconds;
-    const audioBuffer = new ArrayBuffer(44 + numSamples * 2);
-    const view = new DataView(audioBuffer);
+  const combineAudioClips = async (audioClips: Blob[]): Promise<Blob> => {
+    const audioContext = new AudioContext();
+    const audioBuffers: AudioBuffer[] = [];
+    
+    // Decode all audio clips
+    for (const clip of audioClips) {
+      const arrayBuffer = await clip.arrayBuffer();
+      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+      audioBuffers.push(audioBuffer);
+    }
+    
+    // Calculate total duration with silence gaps
+    const totalDuration = audioBuffers.reduce((sum, buffer) => sum + buffer.duration, 0) + 
+                         (silenceGap * (audioBuffers.length - 1));
+    
+    // Create output buffer
+    const sampleRate = audioBuffers[0].sampleRate;
+    const outputBuffer = audioContext.createBuffer(1, totalDuration * sampleRate, sampleRate);
+    const outputData = outputBuffer.getChannelData(0);
+    
+    // Combine audio with silence gaps
+    let currentOffset = 0;
+    for (let i = 0; i < audioBuffers.length; i++) {
+      const buffer = audioBuffers[i];
+      const inputData = buffer.getChannelData(0);
+      
+      // Copy audio data
+      for (let j = 0; j < inputData.length; j++) {
+        outputData[currentOffset + j] = inputData[j];
+      }
+      
+      currentOffset += inputData.length;
+      
+      // Add silence gap (except after last clip)
+      if (i < audioBuffers.length - 1) {
+        const silenceSamples = silenceGap * sampleRate;
+        // outputData is already initialized to zeros (silence)
+        currentOffset += silenceSamples;
+      }
+    }
+    
+    // Convert back to WAV blob
+    return audioBufferToWav(outputBuffer);
+  };
+
+  const audioBufferToWav = (buffer: AudioBuffer): Blob => {
+    const length = buffer.length;
+    const arrayBuffer = new ArrayBuffer(44 + length * 2);
+    const view = new DataView(arrayBuffer);
+    const channelData = buffer.getChannelData(0);
     
     // WAV header
     const writeString = (offset: number, string: string) => {
@@ -104,41 +149,28 @@ I am completely worthy of all the magnificence flowing toward me.`;
     };
     
     writeString(0, 'RIFF');
-    view.setUint32(4, 36 + numSamples * 2, true);
+    view.setUint32(4, 36 + length * 2, true);
     writeString(8, 'WAVE');
     writeString(12, 'fmt ');
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
     view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
+    view.setUint32(24, buffer.sampleRate, true);
+    view.setUint32(28, buffer.sampleRate * 2, true);
     view.setUint16(32, 2, true);
     view.setUint16(34, 16, true);
     writeString(36, 'data');
-    view.setUint32(40, numSamples * 2, true);
+    view.setUint32(40, length * 2, true);
     
-    // Silence (zeros)
-    for (let i = 0; i < numSamples; i++) {
-      view.setInt16(44 + i * 2, 0, true);
+    // Convert float32 to int16
+    let offset = 44;
+    for (let i = 0; i < length; i++) {
+      const sample = Math.max(-1, Math.min(1, channelData[i]));
+      view.setInt16(offset, sample * 0x7FFF, true);
+      offset += 2;
     }
     
-    return new Blob([audioBuffer], { type: 'audio/wav' });
-  };
-
-  const combineAudioClips = async (audioClips: Blob[]): Promise<Blob> => {
-    const silenceBlob = createSilenceBlob(silenceGap);
-    const allBlobs: Blob[] = [];
-    
-    for (let i = 0; i < audioClips.length; i++) {
-      allBlobs.push(audioClips[i]);
-      if (i < audioClips.length - 1) {
-        allBlobs.push(silenceBlob);
-      }
-    }
-    
-    // For now, we'll create a simple concatenation
-    // In a real implementation, you'd want proper audio processing
-    return new Blob(allBlobs, { type: 'audio/wav' });
+    return new Blob([arrayBuffer], { type: 'audio/wav' });
   };
 
   const handleGenerate = async () => {

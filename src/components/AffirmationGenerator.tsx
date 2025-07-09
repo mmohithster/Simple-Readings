@@ -293,6 +293,31 @@ I am completely worthy of all the magnificence flowing toward me.`;
     }).join('\n');
   };
 
+  const generateWordLevelSrtContent = (): string => {
+    let srtEntries: string[] = [];
+    let entryIndex = 1;
+
+    affirmationTimings.forEach((timing) => {
+      const words = timing.text.split(' ').filter(word => word.trim());
+      const totalDuration = timing.end - timing.start;
+      const timePerWord = totalDuration / words.length;
+
+      // Group words into chunks of maximum 5 words
+      for (let i = 0; i < words.length; i += 5) {
+        const chunk = words.slice(i, i + 5);
+        const chunkStart = timing.start + (i * timePerWord);
+        const chunkEnd = timing.start + ((i + chunk.length) * timePerWord);
+
+        srtEntries.push(
+          `${entryIndex}\n${formatTime(chunkStart)} --> ${formatTime(chunkEnd)}\n${chunk.join(' ')}\n`
+        );
+        entryIndex++;
+      }
+    });
+
+    return srtEntries.join('\n');
+  };
+
   const handleDownload = () => {
     if (generatedAudio) {
       const a = document.createElement('a');
@@ -313,6 +338,23 @@ I am completely worthy of all the magnificence flowing toward me.`;
       const a = document.createElement('a');
       a.href = url;
       a.download = 'affirmations.srt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  const handleDownloadWordSrt = () => {
+    if (affirmationTimings.length > 0) {
+      const srtContent = generateWordLevelSrtContent();
+      const blob = new Blob([srtContent], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'affirmations-words.srt';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -528,26 +570,39 @@ I am completely worthy of all the magnificence flowing toward me.`;
                         {isPlaying ? 'Pause' : 'Preview'}
                       </Button>
                       
-                      <div className="flex gap-2">
+                      <div className="space-y-2">
                         <Button
                           onClick={handleDownload}
-                          className="flex-1 bg-gradient-primary hover:shadow-glow"
+                          className="w-full bg-gradient-primary hover:shadow-glow"
                           size="sm"
                         >
                           <Download className="w-4 h-4 mr-2" />
                           Audio
                         </Button>
                         
-                        <Button
-                          onClick={handleDownloadSrt}
-                          variant="outline"
-                          size="sm"
-                          className="flex-1"
-                          disabled={affirmationTimings.length === 0}
-                        >
-                          <Download className="w-4 h-4 mr-2" />
-                          .SRT
-                        </Button>
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={handleDownloadSrt}
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            disabled={affirmationTimings.length === 0}
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            .SRT
+                          </Button>
+                          
+                          <Button
+                            onClick={handleDownloadWordSrt}
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            disabled={affirmationTimings.length === 0}
+                          >
+                            <Download className="w-4 h-4 mr-2" />
+                            Word SRT
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>

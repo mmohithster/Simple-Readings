@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -318,6 +318,49 @@ I am completely worthy of all the magnificence flowing toward me.`;
       URL.revokeObjectURL(url);
     }
   };
+
+  // Keyboard shortcuts for voice presets
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && !event.altKey && !event.metaKey) {
+        let newVoice = '';
+        let shortcutName = '';
+        
+        if (event.shiftKey && event.key.toLowerCase() === 's') {
+          newVoice = 'am_eric(1)+am_fenrir(1)+am_liam(1)+am_michael(1)+af_jadzia(1)+af_nicole(1)+am_v0gurney(4)';
+          shortcutName = 'Mixed Ensemble';
+          event.preventDefault();
+        } else if (event.key.toLowerCase() === 'i') {
+          newVoice = 'af_jessica(1)+af_v0nicole(8)+af_v0(1)';
+          shortcutName = 'Jessica Blend';
+          event.preventDefault();
+        } else if (event.key.toLowerCase() === 'a') {
+          newVoice = 'af_nicole(5)+am_echo(1)+af_river(4)';
+          shortcutName = 'Nicole River';
+          event.preventDefault();
+        } else if (event.key.toLowerCase() === 'n') {
+          newVoice = 'af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)';
+          shortcutName = 'Nicole Echo';
+          event.preventDefault();
+        } else if (event.key.toLowerCase() === 'p') {
+          newVoice = 'af_nicole(5)+am_v0gurney(5)';
+          shortcutName = 'Nicole Gurney';
+          event.preventDefault();
+        }
+        
+        if (newVoice) {
+          setVoiceSettings(prev => ({ ...prev, voice: newVoice }));
+          toast({
+            title: "Voice Changed",
+            description: `Switched to ${shortcutName}`,
+          });
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [toast]);
 
   const togglePlayback = () => {
     const audio = document.getElementById('audio-preview') as HTMLAudioElement;

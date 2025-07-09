@@ -327,26 +327,38 @@ I am completely worthy of all the magnificence flowing toward me.`;
       if (event.ctrlKey && !event.altKey && !event.metaKey) {
         let newVoice = '';
         let shortcutName = '';
+        let newSpeed = 0.9;
+        let newSilenceGap = 1;
         
         if (event.shiftKey && event.key.toLowerCase() === 's') {
           newVoice = 'am_eric(1)+am_fenrir(1)+am_liam(1)+am_michael(1)+af_jadzia(1)+af_nicole(1)+am_v0gurney(4)';
           shortcutName = 'Spiritual Sattva';
+          newSpeed = 0.9;
+          newSilenceGap = 1;
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'i') {
           newVoice = 'af_jessica(1)+af_v0nicole(8)+af_v0(1)';
           shortcutName = 'Ivory Affirmation';
+          newSpeed = 0.9;
+          newSilenceGap = 5;
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'a') {
           newVoice = 'af_nicole(5)+am_echo(1)+af_river(4)';
           shortcutName = 'Astral Embrace';
+          newSpeed = 0.8;
+          newSilenceGap = 1;
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'e') {
           newVoice = 'af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)';
           shortcutName = 'Nightly Science';
+          newSpeed = 0.83;
+          newSilenceGap = 1;
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'g') {
-          newVoice = 'af_nicole(5)+am_v0gurney(5)';
+          newVoice = 'af_nicole(4)+am_liam(5)+am_v0gurney(1)';
           shortcutName = 'Starlit Science';
+          newSpeed = 0.83;
+          newSilenceGap = 1;
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'm') {
           setShowShortcuts(true);
@@ -354,7 +366,8 @@ I am completely worthy of all the magnificence flowing toward me.`;
         }
         
         if (newVoice) {
-          setVoiceSettings(prev => ({ ...prev, voice: newVoice }));
+          setVoiceSettings(prev => ({ ...prev, voice: newVoice, speed: newSpeed }));
+          setSilenceGap(newSilenceGap);
           toast({
             title: "Voice Changed",
             description: `Switched to ${shortcutName}`,

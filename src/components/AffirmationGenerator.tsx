@@ -5,8 +5,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Progress } from '@/components/ui/progress';
-import { Download, Play, Pause, Volume2 } from 'lucide-react';
+import { Download, Play, Pause, Volume2, Keyboard } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 interface VoiceSettings {
   model: string;
@@ -27,6 +28,7 @@ const AffirmationGenerator = () => {
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [affirmationTimings, setAffirmationTimings] = useState<Array<{text: string, start: number, end: number}>>([]);
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const { toast } = useToast();
 
   const defaultAffirmations = `I am fully ready for the radiant possibilities of July 2025.
@@ -328,23 +330,26 @@ I am completely worthy of all the magnificence flowing toward me.`;
         
         if (event.shiftKey && event.key.toLowerCase() === 's') {
           newVoice = 'am_eric(1)+am_fenrir(1)+am_liam(1)+am_michael(1)+af_jadzia(1)+af_nicole(1)+am_v0gurney(4)';
-          shortcutName = 'Mixed Ensemble';
+          shortcutName = 'Spiritual Sattva';
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'i') {
           newVoice = 'af_jessica(1)+af_v0nicole(8)+af_v0(1)';
-          shortcutName = 'Jessica Blend';
+          shortcutName = 'Ivory Affirmation';
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'a') {
           newVoice = 'af_nicole(5)+am_echo(1)+af_river(4)';
-          shortcutName = 'Nicole River';
+          shortcutName = 'Astral Embrace';
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'e') {
           newVoice = 'af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)';
-          shortcutName = 'Nicole Echo';
+          shortcutName = 'Nightly Science';
           event.preventDefault();
         } else if (event.key.toLowerCase() === 'g') {
           newVoice = 'af_nicole(5)+am_v0gurney(5)';
-          shortcutName = 'Nicole Gurney';
+          shortcutName = 'Starlit Science';
+          event.preventDefault();
+        } else if (event.key.toLowerCase() === 'm') {
+          setShowShortcuts(true);
           event.preventDefault();
         }
         
@@ -539,6 +544,46 @@ I am completely worthy of all the magnificence flowing toward me.`;
           </div>
         </div>
       </div>
+
+      {/* Shortcuts Dialog */}
+      <Dialog open={showShortcuts} onOpenChange={setShowShortcuts}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Keyboard className="w-5 h-5 text-primary" />
+              Voice Shortcuts
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="grid gap-2 text-sm">
+              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
+                <span className="font-mono">Ctrl + I</span>
+                <span>Ivory Affirmation</span>
+              </div>
+              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
+                <span className="font-mono">Ctrl + A</span>
+                <span>Astral Embrace</span>
+              </div>
+              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
+                <span className="font-mono">Ctrl + E</span>
+                <span>Nightly Science</span>
+              </div>
+              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
+                <span className="font-mono">Ctrl + G</span>
+                <span>Starlit Science</span>
+              </div>
+              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
+                <span className="font-mono">Ctrl + Shift + S</span>
+                <span>Spiritual Sattva</span>
+              </div>
+              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
+                <span className="font-mono">Ctrl + M</span>
+                <span>Show this dialog</span>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

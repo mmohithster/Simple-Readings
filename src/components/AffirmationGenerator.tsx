@@ -338,11 +338,11 @@ I am completely worthy of all the magnificence flowing toward me.`;
           newVoice = 'af_nicole(5)+am_echo(1)+af_river(4)';
           shortcutName = 'Nicole River';
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'n') {
+        } else if (event.key.toLowerCase() === 'e') {
           newVoice = 'af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)';
           shortcutName = 'Nicole Echo';
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'p') {
+        } else if (event.key.toLowerCase() === 'g') {
           newVoice = 'af_nicole(5)+am_v0gurney(5)';
           shortcutName = 'Nicole Gurney';
           event.preventDefault();

@@ -342,7 +342,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
           newSpeed = 0.9;
           newSilenceGap = 5;
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'a') {
+        } else if (event.shiftKey && event.key.toLowerCase() === 'a') {
           newVoice = 'af_nicole(5)+am_echo(1)+af_river(4)';
           shortcutName = 'Astral Embrace';
           newSpeed = 0.8;
@@ -574,7 +574,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
                 <span>Ivory Affirmation</span>
               </div>
               <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + A</span>
+                <span className="font-mono">Ctrl + Shift + A</span>
                 <span>Astral Embrace</span>
               </div>
               <div className="flex justify-between items-center p-2 rounded bg-muted/30">

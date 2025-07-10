@@ -28,7 +28,6 @@ const AffirmationGenerator = () => {
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [affirmationTimings, setAffirmationTimings] = useState<Array<{text: string, start: number, end: number}>>([]);
-  const [wordTimings, setWordTimings] = useState<Array<{word: string, start: number, end: number}>>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const { toast } = useToast();
 
@@ -55,7 +54,6 @@ I am completely worthy of all the magnificence flowing toward me.`;
 
   const generateAudioClips = async (affirmationLines: string[]) => {
     const audioClips: Blob[] = [];
-    const allWordTimings: Array<{word: string, start: number, end: number}> = [];
     
     for (let i = 0; i < affirmationLines.length; i++) {
       const affirmation = affirmationLines[i].trim();
@@ -71,7 +69,6 @@ I am completely worthy of all the magnificence flowing toward me.`;
           },
           body: JSON.stringify({
             input: affirmation,
-            return_word_timestamps: true,
             ...voiceSettings
           })
         });
@@ -80,38 +77,8 @@ I am completely worthy of all the magnificence flowing toward me.`;
           throw new Error(`Failed to generate audio for: "${affirmation}"`);
         }
         
-        // Try to parse as JSON first for word timestamps
-        const contentType = response.headers.get('content-type');
-        if (contentType && contentType.includes('application/json')) {
-          const jsonData = await response.json();
-          if (jsonData.audio_data && jsonData.word_timestamps) {
-            // Convert base64 audio data to blob
-            const audioData = atob(jsonData.audio_data);
-            const audioArray = new Uint8Array(audioData.length);
-            for (let j = 0; j < audioData.length; j++) {
-              audioArray[j] = audioData.charCodeAt(j);
-            }
-            const audioBlob = new Blob([audioArray], { type: 'audio/wav' });
-            audioClips.push(audioBlob);
-            
-            // Store word timings for this affirmation
-            if (jsonData.word_timestamps && Array.isArray(jsonData.word_timestamps)) {
-              jsonData.word_timestamps.forEach((wordTiming: any) => {
-                allWordTimings.push({
-                  word: wordTiming.word || wordTiming.text || '',
-                  start: wordTiming.start || 0,
-                  end: wordTiming.end || 0
-                });
-              });
-            }
-          } else {
-            throw new Error("Invalid JSON response format");
-          }
-        } else {
-          // Fallback to blob response
-          const audioBlob = await response.blob();
-          audioClips.push(audioBlob);
-        }
+        const audioBlob = await response.blob();
+        audioClips.push(audioBlob);
         
       } catch (error) {
         toast({
@@ -123,8 +90,6 @@ I am completely worthy of all the magnificence flowing toward me.`;
       }
     }
     
-    // Store word timings
-    setWordTimings(allWordTimings);
     return audioClips;
   };
 
@@ -328,45 +293,6 @@ I am completely worthy of all the magnificence flowing toward me.`;
     }).join('\n');
   };
 
-  const generate5WordSrtContent = (): string => {
-    if (wordTimings.length === 0) {
-      toast({
-        title: "No Word Timing Data",
-        description: "Word-level timing data not available. Try regenerating the audio.",
-        variant: "destructive"
-      });
-      return '';
-    }
-
-    const captions: Array<{text: string, start: number, end: number}> = [];
-    let currentWords: string[] = [];
-    let startTime: number = 0;
-    let endTime: number = 0;
-
-    wordTimings.forEach((wordTiming, index) => {
-      if (currentWords.length === 0) {
-        startTime = wordTiming.start;
-      }
-      
-      currentWords.push(wordTiming.word);
-      endTime = wordTiming.end;
-
-      // Create caption when we have 5 words or reached the end
-      if (currentWords.length === 5 || index === wordTimings.length - 1) {
-        captions.push({
-          text: currentWords.join(' '),
-          start: startTime,
-          end: endTime
-        });
-        currentWords = [];
-      }
-    });
-
-    return captions.map((caption, index) => {
-      return `${index + 1}\n${formatTime(caption.start)} --> ${formatTime(caption.end)}\n${caption.text}\n`;
-    }).join('\n');
-  };
-
   const handleDownload = () => {
     if (generatedAudio) {
       const a = document.createElement('a');
@@ -387,23 +313,6 @@ I am completely worthy of all the magnificence flowing toward me.`;
       const a = document.createElement('a');
       a.href = url;
       a.download = 'affirmations.srt';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      
-      URL.revokeObjectURL(url);
-    }
-  };
-
-  const handleDownload5WordSrt = () => {
-    const srtContent = generate5WordSrtContent();
-    if (srtContent) {
-      const blob = new Blob([srtContent], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'affirmations-5word.srt';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -619,39 +528,26 @@ I am completely worthy of all the magnificence flowing toward me.`;
                         {isPlaying ? 'Pause' : 'Preview'}
                       </Button>
                       
-                      <div className="space-y-2">
+                      <div className="flex gap-2">
                         <Button
                           onClick={handleDownload}
-                          className="w-full bg-gradient-primary hover:shadow-glow"
+                          className="flex-1 bg-gradient-primary hover:shadow-glow"
                           size="sm"
                         >
                           <Download className="w-4 h-4 mr-2" />
                           Audio
                         </Button>
                         
-                        <div className="flex gap-2">
-                          <Button
-                            onClick={handleDownloadSrt}
-                            variant="outline"
-                            size="sm"
-                            className="flex-1"
-                            disabled={affirmationTimings.length === 0}
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            .SRT
-                          </Button>
-                          
-                          <Button
-                            onClick={handleDownload5WordSrt}
-                            variant="outline"
-                            size="sm"
-                            className="flex-1"
-                            disabled={wordTimings.length === 0}
-                          >
-                            <Download className="w-4 h-4 mr-2" />
-                            5W SRT
-                          </Button>
-                        </div>
+                        <Button
+                          onClick={handleDownloadSrt}
+                          variant="outline"
+                          size="sm"
+                          className="flex-1"
+                          disabled={affirmationTimings.length === 0}
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          .SRT
+                        </Button>
                       </div>
                     </div>
                   </div>

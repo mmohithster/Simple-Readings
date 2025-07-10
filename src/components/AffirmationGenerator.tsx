@@ -72,7 +72,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
           body: JSON.stringify({
             input: affirmation,
             ...voiceSettings,
-            return_word_timestamps: true // Request word-level timing
+            return_word_timestamps: true
           })
         });
         
@@ -80,28 +80,37 @@ I am completely worthy of all the magnificence flowing toward me.`;
           throw new Error(`Failed to generate audio for: "${affirmation}"`);
         }
         
-        const result = await response.json();
+        // Check if response is JSON or audio data
+        const contentType = response.headers.get('content-type');
         
-        // Check if response includes word timing data
-        if (result.audio && result.word_timestamps) {
-          // Convert base64 audio to blob
-          const audioData = atob(result.audio);
-          const audioArray = new Uint8Array(audioData.length);
-          for (let j = 0; j < audioData.length; j++) {
-            audioArray[j] = audioData.charCodeAt(j);
-          }
-          const audioBlob = new Blob([audioArray], { type: 'audio/wav' });
-          audioClips.push(audioBlob);
+        if (contentType && contentType.includes('application/json')) {
+          // Response includes JSON with word timestamps
+          const result = await response.json();
           
-          // Store word timings
-          wordTimings.push({
-            text: affirmation,
-            wordTimings: result.word_timestamps
-          });
+          if (result.audio && result.word_timestamps) {
+            // Convert base64 audio to blob
+            const audioData = atob(result.audio);
+            const audioArray = new Uint8Array(audioData.length);
+            for (let j = 0; j < audioData.length; j++) {
+              audioArray[j] = audioData.charCodeAt(j);
+            }
+            const audioBlob = new Blob([audioArray], { type: 'audio/wav' });
+            audioClips.push(audioBlob);
+            
+            // Store word timings
+            wordTimings.push({
+              text: affirmation,
+              wordTimings: result.word_timestamps
+            });
+          } else {
+            throw new Error('Invalid response format');
+          }
         } else {
-          // Fallback to original method if word timestamps not available
+          // Response is direct audio data (fallback)
           const audioBlob = await response.blob();
           audioClips.push(audioBlob);
+          
+          // No word timings available, store empty array
           wordTimings.push({
             text: affirmation,
             wordTimings: []
@@ -109,9 +118,10 @@ I am completely worthy of all the magnificence flowing toward me.`;
         }
         
       } catch (error) {
+        console.error('Audio generation error:', error);
         toast({
-          title: "Generation Error",
-          description: `Failed to generate audio for affirmation ${i + 1}`,
+          title: "Generation Error", 
+          description: `Failed to generate audio for affirmation ${i + 1}: ${error.message}`,
           variant: "destructive"
         });
         throw error;

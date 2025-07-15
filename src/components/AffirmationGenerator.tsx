@@ -1,13 +1,27 @@
-import React, { useState, useEffect } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Progress } from '@/components/ui/progress';
-import { Download, Play, Pause, Volume2, Keyboard } from 'lucide-react';
-import { useToast } from '@/hooks/use-toast';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import React, { useState, useEffect } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Progress } from "@/components/ui/progress";
+import {
+  Download,
+  Play,
+  Pause,
+  Volume2,
+  Keyboard,
+  Bot,
+  Key,
+} from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import OpenAI from "openai";
 
 interface VoiceSettings {
   model: string;
@@ -16,97 +30,272 @@ interface VoiceSettings {
 }
 
 const AffirmationGenerator = () => {
-  const [affirmations, setAffirmations] = useState('');
+  const [affirmations, setAffirmations] = useState("");
+  const [a4fApiKey, setA4fApiKey] = useState(() => {
+    // Load API key from localStorage on component mount
+    return localStorage.getItem("a4f-api-key") || "";
+  });
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
-    model: 'kokoro',
-    voice: 'af_bella(3)+af_v0nicole(6)+af_kore(1)',
-    speed: 0.9
+    model: "kokoro",
+    voice: "af_bella(3)+af_v0nicole(6)+af_kore(1)",
+    speed: 0.9,
   });
   const [silenceGap, setSilenceGap] = useState(2.5);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [progress, setProgress] = useState(0);
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [affirmationTimings, setAffirmationTimings] = useState<Array<{text: string, start: number, end: number}>>([]);
+
+  const [affirmationTimings, setAffirmationTimings] = useState<
+    Array<{ text: string; start: number; end: number }>
+  >([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showScriptDialog, setShowScriptDialog] = useState(false);
+  const [scriptTitle, setScriptTitle] = useState("");
+  const [scriptDate, setScriptDate] = useState("");
+  const [savedScriptTitle, setSavedScriptTitle] = useState("");
+  const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [volume, setVolume] = useState(1);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
+    null
+  );
   const { toast } = useToast();
 
-  const defaultAffirmations = `I am fully ready for the radiant possibilities of July 2025.
-I am wide open to the miracles this July is weaving into my reality.
-I am a powerful magnet for blessings, and July 2025 overflows with them.
-I welcome this luminous month with an expansive heart and unlimited faith.
-I am perfectly aligned with the frequency of magic and divine surprises.
-This month, I choose to recognize miracles in every moment.
-This month, I choose to expect extraordinary beauty.
-July 2025 is my chapter of magnificent breakthrough and transformation.
-I am flowing into a season of grace and effortless manifestation.
-My soul is open to the breathtaking wonders July holds for me.
-I am prepared to receive the abundant gifts July 2025 is delivering to me.
-I invite miracles into every corner of my existence this July.
-I am perfectly tuned to the signs and synchronicities leading me to my destiny.
-July 2025 is my month for quantum leaps and glorious new chapters.
-I dissolve all resistance and allow miracles to cascade to me naturally.
-My mind is luminous, my heart is expansive, and my spirit dances with July's gifts.
-I embrace the unfolding of divine perfection in my life this month.
-I am a living conduit for miraculous energy and positive transformation.
-Every sunrise in July 2025 brings me closer to my most sacred dreams.
-I am completely worthy of all the magnificence flowing toward me.`;
+  const generateScript = async (title: string, date: string) => {
+    if (!a4fApiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your A4F API key to generate scripts.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsGeneratingScript(true);
+
+    try {
+      const a4fClient = new OpenAI({
+        apiKey: a4fApiKey,
+        baseURL: "https://api.a4f.co/v1",
+        dangerouslyAllowBrowser: true,
+      });
+
+      const prompt = `I want you to write 150 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+Use clear, single-line affirmations like in your reference. Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation. Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT!`;
+
+      const completion = await a4fClient.chat.completions.create({
+        model: "provider-3/grok-4-0709",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 4000,
+      });
+
+      const generatedScript = completion.choices[0].message.content;
+
+      if (generatedScript) {
+        // Remove numbering from affirmations (e.g., "1. ", "1) ", "1: ", "1 - ")
+        const cleanedScript = generatedScript
+          .split("\n")
+          .map((line) => line.replace(/^\s*\d+[\.\)\:\-]\s*/, "").trim())
+          .filter((line) => line.length > 0)
+          .join("\n");
+
+        setAffirmations(cleanedScript);
+        setSavedScriptTitle(title); // Save the title for description generation
+        toast({
+          title: "Script Generated!",
+          description: `Successfully generated affirmations for "${title}"`,
+        });
+      }
+    } catch (error) {
+      console.error("Script generation failed:", error);
+      toast({
+        title: "Generation Failed",
+        description:
+          "Failed to generate script. Please check your API key and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingScript(false);
+      setShowScriptDialog(false);
+    }
+  };
+
+  const handleGenerateScript = () => {
+    if (!a4fApiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your A4F API key first.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setShowScriptDialog(true);
+  };
+
+  const handleScriptSubmit = () => {
+    if (!scriptTitle.trim() || !scriptDate.trim()) {
+      toast({
+        title: "Missing Information",
+        description: "Please enter both title and date.",
+        variant: "destructive",
+      });
+      return;
+    }
+    generateScript(scriptTitle, scriptDate);
+  };
+
+  const generateDescription = async () => {
+    if (!a4fApiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your A4F API key to generate descriptions.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!savedScriptTitle) {
+      toast({
+        title: "No Script Title",
+        description: "Please generate a script first to create a description.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (affirmationTimings.length === 0) {
+      toast({
+        title: "No Content Available",
+        description:
+          "Please generate audio first to create a description from the content.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsGeneratingDescription(true);
+
+    try {
+      const a4fClient = new OpenAI({
+        apiKey: a4fApiKey,
+        baseURL: "https://api.a4f.co/v1",
+        dangerouslyAllowBrowser: true,
+      });
+
+      // Create content from affirmations for the prompt
+      const srtContent = affirmationTimings
+        .map((timing) => timing.text)
+        .join("\n");
+
+      const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
+
+SRT Content:
+${srtContent}`;
+
+      const completion = await a4fClient.chat.completions.create({
+        model: "provider-3/grok-4-0709",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 500,
+      });
+
+      const generatedDescription = completion.choices[0].message.content;
+
+      if (generatedDescription) {
+        // Download as .txt file
+        const blob = new Blob([generatedDescription], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${savedScriptTitle
+          .replace(/[^a-z0-9]/gi, "_")
+          .toLowerCase()}_description.txt`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+
+        URL.revokeObjectURL(url);
+
+        toast({
+          title: "Description Generated!",
+          description: "YouTube description downloaded successfully.",
+        });
+      }
+    } catch (error) {
+      console.error("Description generation failed:", error);
+      toast({
+        title: "Generation Failed",
+        description:
+          "Failed to generate description. Please check your API key and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsGeneratingDescription(false);
+    }
+  };
 
   const generateAudioClips = async (affirmationLines: string[]) => {
     const audioClips: Blob[] = [];
-    
+
     for (let i = 0; i < affirmationLines.length; i++) {
       const affirmation = affirmationLines[i].trim();
       if (!affirmation) continue;
-      
+
       try {
         setProgress(((i + 1) / affirmationLines.length) * 70); // 70% for individual clips
-        
-        const response = await fetch('http://localhost:8880/v1/audio/speech', {
-          method: 'POST',
+
+        const response = await fetch("http://localhost:8880/v1/audio/speech", {
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
             input: affirmation,
-            ...voiceSettings
-          })
+            ...voiceSettings,
+          }),
         });
-        
+
         if (!response.ok) {
           throw new Error(`Failed to generate audio for: "${affirmation}"`);
         }
-        
+
         const audioBlob = await response.blob();
         audioClips.push(audioBlob);
-        
       } catch (error) {
         toast({
           title: "Generation Error",
           description: `Failed to generate audio for affirmation ${i + 1}`,
-          variant: "destructive"
+          variant: "destructive",
         });
         throw error;
       }
     }
-    
+
     return audioClips;
   };
 
-  const removeInternalPauses = (audioBuffer: AudioBuffer, maxPauseLength: number = 0.4): AudioBuffer => {
+  const removeInternalPauses = (
+    audioBuffer: AudioBuffer,
+    maxPauseLength: number = 0.4
+  ): AudioBuffer => {
     const audioContext = new AudioContext();
     const inputData = audioBuffer.getChannelData(0);
     const sampleRate = audioBuffer.sampleRate;
     const silenceThreshold = 0.01; // Volume threshold for silence detection
     const maxPauseSamples = maxPauseLength * sampleRate;
-    
+
     const outputData: number[] = [];
     let currentSilenceLength = 0;
-    
+
     for (let i = 0; i < inputData.length; i++) {
       const sample = inputData[i];
       const isSilent = Math.abs(sample) < silenceThreshold;
-      
+
       if (isSilent) {
         currentSilenceLength++;
         // Only add silence if it's shorter than max allowed pause
@@ -118,22 +307,29 @@ I am completely worthy of all the magnificence flowing toward me.`;
         outputData.push(sample);
       }
     }
-    
+
     // Create new audio buffer with reduced pauses
-    const outputBuffer = audioContext.createBuffer(1, outputData.length, sampleRate);
+    const outputBuffer = audioContext.createBuffer(
+      1,
+      outputData.length,
+      sampleRate
+    );
     const outputChannel = outputBuffer.getChannelData(0);
     for (let i = 0; i < outputData.length; i++) {
       outputChannel[i] = outputData[i];
     }
-    
+
     return outputBuffer;
   };
 
-  const combineAudioClips = async (audioClips: Blob[], affirmationLines: string[]): Promise<Blob> => {
+  const combineAudioClips = async (
+    audioClips: Blob[],
+    affirmationLines: string[]
+  ): Promise<Blob> => {
     const audioContext = new AudioContext();
     const audioBuffers: AudioBuffer[] = [];
-    const timings: Array<{text: string, start: number, end: number}> = [];
-    
+    const timings: Array<{ text: string; start: number; end: number }> = [];
+
     // Decode all audio clips and remove internal pauses
     for (const clip of audioClips) {
       const arrayBuffer = await clip.arrayBuffer();
@@ -141,16 +337,21 @@ I am completely worthy of all the magnificence flowing toward me.`;
       const processedBuffer = removeInternalPauses(audioBuffer);
       audioBuffers.push(processedBuffer);
     }
-    
+
     // Calculate total duration with silence gaps
-    const totalDuration = audioBuffers.reduce((sum, buffer) => sum + buffer.duration, 0) + 
-                         (silenceGap * (audioBuffers.length - 1));
-    
+    const totalDuration =
+      audioBuffers.reduce((sum, buffer) => sum + buffer.duration, 0) +
+      silenceGap * (audioBuffers.length - 1);
+
     // Create output buffer
     const sampleRate = audioBuffers[0].sampleRate;
-    const outputBuffer = audioContext.createBuffer(1, totalDuration * sampleRate, sampleRate);
+    const outputBuffer = audioContext.createBuffer(
+      1,
+      totalDuration * sampleRate,
+      sampleRate
+    );
     const outputData = outputBuffer.getChannelData(0);
-    
+
     // Combine audio with silence gaps and track timings
     let currentTime = 0;
     let currentOffset = 0;
@@ -159,22 +360,22 @@ I am completely worthy of all the magnificence flowing toward me.`;
       const inputData = buffer.getChannelData(0);
       const startTime = currentTime;
       const endTime = currentTime + buffer.duration;
-      
+
       // Track timing for .srt generation
       timings.push({
         text: affirmationLines[i].trim(),
         start: startTime,
-        end: endTime
+        end: endTime,
       });
-      
+
       // Copy audio data
       for (let j = 0; j < inputData.length; j++) {
         outputData[currentOffset + j] = inputData[j];
       }
-      
+
       currentOffset += inputData.length;
       currentTime = endTime;
-      
+
       // Add silence gap (except after last clip)
       if (i < audioBuffers.length - 1) {
         const silenceSamples = silenceGap * sampleRate;
@@ -183,10 +384,10 @@ I am completely worthy of all the magnificence flowing toward me.`;
         currentTime += silenceGap;
       }
     }
-    
+
     // Store timings for .srt generation
     setAffirmationTimings(timings);
-    
+
     // Convert back to WAV blob
     return audioBufferToWav(outputBuffer);
   };
@@ -196,18 +397,18 @@ I am completely worthy of all the magnificence flowing toward me.`;
     const arrayBuffer = new ArrayBuffer(44 + length * 2);
     const view = new DataView(arrayBuffer);
     const channelData = buffer.getChannelData(0);
-    
+
     // WAV header
     const writeString = (offset: number, string: string) => {
       for (let i = 0; i < string.length; i++) {
         view.setUint8(offset + i, string.charCodeAt(i));
       }
     };
-    
-    writeString(0, 'RIFF');
+
+    writeString(0, "RIFF");
     view.setUint32(4, 36 + length * 2, true);
-    writeString(8, 'WAVE');
-    writeString(12, 'fmt ');
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
     view.setUint32(16, 16, true);
     view.setUint16(20, 1, true);
     view.setUint16(22, 1, true);
@@ -215,18 +416,18 @@ I am completely worthy of all the magnificence flowing toward me.`;
     view.setUint32(28, buffer.sampleRate * 2, true);
     view.setUint16(32, 2, true);
     view.setUint16(34, 16, true);
-    writeString(36, 'data');
+    writeString(36, "data");
     view.setUint32(40, length * 2, true);
-    
+
     // Convert float32 to int16
     let offset = 44;
     for (let i = 0; i < length; i++) {
       const sample = Math.max(-1, Math.min(1, channelData[i]));
-      view.setInt16(offset, sample * 0x7FFF, true);
+      view.setInt16(offset, sample * 0x7fff, true);
       offset += 2;
     }
-    
-    return new Blob([arrayBuffer], { type: 'audio/wav' });
+
+    return new Blob([arrayBuffer], { type: "audio/wav" });
   };
 
   const handleGenerate = async () => {
@@ -234,7 +435,7 @@ I am completely worthy of all the magnificence flowing toward me.`;
       toast({
         title: "No Affirmations",
         description: "Please enter some affirmations to generate audio.",
-        variant: "destructive"
+        variant: "destructive",
       });
       return;
     }
@@ -244,33 +445,33 @@ I am completely worthy of all the magnificence flowing toward me.`;
     setGeneratedAudio(null);
 
     try {
-      const lines = affirmations.split('\n').filter(line => line.trim());
-      
+      const lines = affirmations.split("\n").filter((line) => line.trim());
+
       toast({
         title: "Generation Started",
-        description: `Processing ${lines.length} affirmations...`
+        description: `Processing ${lines.length} affirmations...`,
       });
 
       const audioClips = await generateAudioClips(lines);
-      
+
       setProgress(80);
       const combinedAudio = await combineAudioClips(audioClips, lines);
-      
+
       setProgress(100);
       const audioUrl = URL.createObjectURL(combinedAudio);
       setGeneratedAudio(audioUrl);
-      
+
       toast({
         title: "Generation Complete!",
-        description: "Your affirmation audio is ready for download."
+        description: "Your affirmation audio is ready for download.",
       });
-      
     } catch (error) {
-      console.error('Generation failed:', error);
+      console.error("Generation failed:", error);
       toast({
         title: "Generation Failed",
-        description: "Please check if Kokoro TTS is running on localhost:8880. You can also visit localhost:8880/web for debugging.",
-        variant: "destructive"
+        description:
+          "Please check if Kokoro TTS is running on localhost:8880. You can also visit localhost:8880/web for debugging.",
+        variant: "destructive",
       });
     } finally {
       setIsGenerating(false);
@@ -283,21 +484,29 @@ I am completely worthy of all the magnificence flowing toward me.`;
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
     const ms = Math.floor((seconds % 1) * 1000);
-    
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
+
+    return `${hours.toString().padStart(2, "0")}:${minutes
+      .toString()
+      .padStart(2, "0")}:${secs.toString().padStart(2, "0")},${ms
+      .toString()
+      .padStart(3, "0")}`;
   };
 
   const generateSrtContent = (): string => {
-    return affirmationTimings.map((timing, index) => {
-      return `${index + 1}\n${formatTime(timing.start)} --> ${formatTime(timing.end)}\n${timing.text}\n`;
-    }).join('\n');
+    return affirmationTimings
+      .map((timing, index) => {
+        return `${index + 1}\n${formatTime(timing.start)} --> ${formatTime(
+          timing.end
+        )}\n${timing.text}\n`;
+      })
+      .join("\n");
   };
 
   const handleDownload = () => {
     if (generatedAudio) {
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = generatedAudio;
-      a.download = 'affirmations.wav';
+      a.download = "affirmations.wav";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -307,16 +516,16 @@ I am completely worthy of all the magnificence flowing toward me.`;
   const handleDownloadSrt = () => {
     if (affirmationTimings.length > 0) {
       const srtContent = generateSrtContent();
-      const blob = new Blob([srtContent], { type: 'text/plain' });
+      const blob = new Blob([srtContent], { type: "text/plain" });
       const url = URL.createObjectURL(blob);
-      
-      const a = document.createElement('a');
+
+      const a = document.createElement("a");
       a.href = url;
-      a.download = 'affirmations.srt';
+      a.download = "affirmations.srt";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      
+
       URL.revokeObjectURL(url);
     }
   };
@@ -325,48 +534,53 @@ I am completely worthy of all the magnificence flowing toward me.`;
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.ctrlKey && !event.altKey && !event.metaKey) {
-        let newVoice = '';
-        let shortcutName = '';
+        let newVoice = "";
+        let shortcutName = "";
         let newSpeed = 0.9;
         let newSilenceGap = 1;
-        
-        if (event.shiftKey && event.key.toLowerCase() === 's') {
-          newVoice = 'am_eric(1)+am_fenrir(1)+am_liam(1)+am_michael(1)+af_jadzia(1)+af_nicole(1)+am_v0gurney(4)';
-          shortcutName = 'Spiritual Sattva';
+
+        if (event.shiftKey && event.key.toLowerCase() === "s") {
+          newVoice =
+            "am_eric(1)+am_fenrir(1)+am_liam(1)+am_michael(1)+af_jadzia(1)+af_nicole(1)+am_v0gurney(4)";
+          shortcutName = "Spiritual Sattva";
           newSpeed = 0.9;
           newSilenceGap = 1;
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'i') {
-          newVoice = 'af_jessica(1)+af_v0nicole(8)+af_v0(1)';
-          shortcutName = 'Ivory Affirmation';
+        } else if (event.key.toLowerCase() === "i") {
+          newVoice = "af_jessica(1)+af_v0nicole(8)+af_v0(1)";
+          shortcutName = "Ivory Affirmation";
           newSpeed = 0.9;
           newSilenceGap = 5;
           event.preventDefault();
-        } else if (event.shiftKey && event.key.toLowerCase() === 'a') {
-          newVoice = 'af_nicole(5)+am_echo(1)+af_river(4)';
-          shortcutName = 'Astral Embrace';
+        } else if (event.shiftKey && event.key.toLowerCase() === "a") {
+          newVoice = "af_nicole(5)+am_echo(1)+af_river(4)";
+          shortcutName = "Astral Embrace";
           newSpeed = 0.8;
           newSilenceGap = 1;
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'e') {
-          newVoice = 'af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)';
-          shortcutName = 'Nightly Science';
+        } else if (event.key.toLowerCase() === "e") {
+          newVoice = "af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)";
+          shortcutName = "Nightly Science";
           newSpeed = 0.83;
           newSilenceGap = 1;
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'g') {
-          newVoice = 'af_nicole(4)+am_liam(5)+am_v0gurney(1)';
-          shortcutName = 'Starlit Science';
+        } else if (event.key.toLowerCase() === "g") {
+          newVoice = "af_nicole(4)+am_liam(5)+am_v0gurney(1)";
+          shortcutName = "Starlit Science";
           newSpeed = 0.83;
           newSilenceGap = 1;
           event.preventDefault();
-        } else if (event.key.toLowerCase() === 'm') {
+        } else if (event.key.toLowerCase() === "m") {
           setShowShortcuts(true);
           event.preventDefault();
         }
-        
+
         if (newVoice) {
-          setVoiceSettings(prev => ({ ...prev, voice: newVoice, speed: newSpeed }));
+          setVoiceSettings((prev) => ({
+            ...prev,
+            voice: newVoice,
+            speed: newSpeed,
+          }));
           setSilenceGap(newSilenceGap);
           toast({
             title: "Voice Changed",
@@ -376,20 +590,80 @@ I am completely worthy of all the magnificence flowing toward me.`;
       }
     };
 
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
   }, [toast]);
 
-  const togglePlayback = () => {
-    const audio = document.getElementById('audio-preview') as HTMLAudioElement;
-    if (audio) {
-      if (isPlaying) {
+  // Save API key to localStorage whenever it changes
+  useEffect(() => {
+    if (a4fApiKey) {
+      localStorage.setItem("a4f-api-key", a4fApiKey);
+    } else {
+      localStorage.removeItem("a4f-api-key");
+    }
+  }, [a4fApiKey]);
+
+  // Initialize audio element when audio is generated
+  useEffect(() => {
+    if (generatedAudio) {
+      const audio = new Audio(generatedAudio);
+      audio.addEventListener("loadedmetadata", () => {
+        setDuration(audio.duration);
+      });
+      audio.addEventListener("timeupdate", () => {
+        setCurrentTime(audio.currentTime);
+      });
+      audio.addEventListener("ended", () => {
+        setIsPlaying(false);
+        setCurrentTime(0);
+      });
+      audio.volume = volume;
+      setAudioElement(audio);
+
+      return () => {
         audio.pause();
+        audio.removeEventListener("loadedmetadata", () => {});
+        audio.removeEventListener("timeupdate", () => {});
+        audio.removeEventListener("ended", () => {});
+      };
+    }
+  }, [generatedAudio]);
+
+  // Update volume when volume state changes
+  useEffect(() => {
+    if (audioElement) {
+      audioElement.volume = volume;
+    }
+  }, [volume, audioElement]);
+
+  const togglePlayback = () => {
+    if (audioElement) {
+      if (isPlaying) {
+        audioElement.pause();
       } else {
-        audio.play();
+        audioElement.play();
       }
       setIsPlaying(!isPlaying);
     }
+  };
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newTime = parseFloat(e.target.value);
+    setCurrentTime(newTime);
+    if (audioElement) {
+      audioElement.currentTime = newTime;
+    }
+  };
+
+  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newVolume = parseFloat(e.target.value);
+    setVolume(newVolume);
+  };
+
+  const formatPlayerTime = (time: number): string => {
+    const minutes = Math.floor(time / 60);
+    const seconds = Math.floor(time % 60);
+    return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
   return (
@@ -401,8 +675,9 @@ I am completely worthy of all the magnificence flowing toward me.`;
             Affirmation Audio Generator
           </h1>
           <p className="text-muted-foreground max-w-2xl mx-auto">
-            Transform your affirmations into beautiful audio with Kokoro TTS. 
-            Create personalized meditation tracks with customizable silence gaps.
+            Transform your affirmations into beautiful audio with Kokoro TTS.
+            Create personalized meditation tracks with customizable silence
+            gaps.
           </p>
         </div>
 
@@ -418,19 +693,103 @@ I am completely worthy of all the magnificence flowing toward me.`;
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label
+                    htmlFor="a4fApiKey"
+                    className="flex items-center gap-2"
+                  >
+                    <Key className="w-4 h-4 text-primary" />
+                    A4F API Key
+                  </Label>
+                  <Input
+                    id="a4fApiKey"
+                    type="password"
+                    placeholder="Enter your A4F API key..."
+                    value={a4fApiKey}
+                    onChange={(e) => setA4fApiKey(e.target.value)}
+                  />
+                </div>
                 <Textarea
                   placeholder="Enter your affirmations, one per line..."
                   value={affirmations}
                   onChange={(e) => setAffirmations(e.target.value)}
                   className="min-h-[300px] resize-none"
                 />
+
                 <Button
                   variant="outline"
-                  onClick={() => setAffirmations(defaultAffirmations)}
-                  className="w-full"
+                  onClick={handleGenerateScript}
+                  disabled={isGeneratingScript}
+                  className="w-full bg-gradient-primary text-white hover:shadow-glow"
                 >
-                  Use Sample Affirmations
+                  <Bot className="w-4 h-4 mr-2" />
+                  {isGeneratingScript ? "Generating..." : "Generate Script"}
                 </Button>
+
+                {generatedAudio && (
+                  <div className="mt-4 p-4 bg-muted/30 rounded-lg border">
+                    <h4 className="text-sm font-medium mb-2">
+                      Generated Audio
+                    </h4>
+                    <div className="space-y-3">
+                      {/* Play/Pause and Time Display */}
+                      <div className="flex items-center gap-3">
+                        <Button
+                          onClick={togglePlayback}
+                          size="sm"
+                          variant="outline"
+                          className="flex-shrink-0"
+                        >
+                          {isPlaying ? (
+                            <Pause className="w-4 h-4" />
+                          ) : (
+                            <Play className="w-4 h-4" />
+                          )}
+                        </Button>
+
+                        <div className="flex-1 space-y-1">
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{formatPlayerTime(currentTime)}</span>
+                            <span>{formatPlayerTime(duration)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min="0"
+                            max={duration || 0}
+                            value={currentTime}
+                            onChange={handleSeek}
+                            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                            style={{
+                              background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
+                                (currentTime / duration) * 100 || 0
+                              }%, #d1d5db ${
+                                (currentTime / duration) * 100 || 0
+                              }%, #d1d5db 100%)`,
+                            }}
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-1 flex-shrink-0">
+                          <Volume2 className="w-4 h-4 text-muted-foreground" />
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={volume}
+                            onChange={handleVolumeChange}
+                            className="w-16 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                            style={{
+                              background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
+                                volume * 100
+                              }%, #d1d5db ${volume * 100}%, #d1d5db 100%)`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -449,13 +808,15 @@ I am completely worthy of all the magnificence flowing toward me.`;
                     type="text"
                     placeholder="af_jessica(1)+af_v0nicole(8)+af_v0(1)"
                     value={voiceSettings.voice}
-                    onChange={(e) => setVoiceSettings(prev => ({
-                      ...prev,
-                      voice: e.target.value
-                    }))}
+                    onChange={(e) =>
+                      setVoiceSettings((prev) => ({
+                        ...prev,
+                        voice: e.target.value,
+                      }))
+                    }
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="speed">Speech Speed</Label>
                   <Input
@@ -465,13 +826,15 @@ I am completely worthy of all the magnificence flowing toward me.`;
                     max="2.0"
                     step="0.1"
                     value={voiceSettings.speed}
-                    onChange={(e) => setVoiceSettings(prev => ({
-                      ...prev,
-                      speed: parseFloat(e.target.value)
-                    }))}
+                    onChange={(e) =>
+                      setVoiceSettings((prev) => ({
+                        ...prev,
+                        speed: parseFloat(e.target.value),
+                      }))
+                    }
                   />
                 </div>
-                
+
                 <div>
                   <Label htmlFor="silence">Silence Gap (seconds)</Label>
                   <Input
@@ -496,57 +859,58 @@ I am completely worthy of all the magnificence flowing toward me.`;
                   className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-500"
                   size="lg"
                 >
-                  {isGenerating ? 'Generating...' : 'Generate Audio'}
+                  {isGenerating ? "Generating..." : "Generate Audio"}
                 </Button>
-                
+
                 {isGenerating && (
                   <div className="space-y-2">
                     <Progress value={progress} className="w-full" />
                     <p className="text-sm text-muted-foreground text-center">
-                      {progress < 70 ? 'Processing affirmations...' : 'Combining audio clips...'}
+                      {progress < 70
+                        ? "Processing affirmations..."
+                        : "Combining audio clips..."}
                     </p>
                   </div>
                 )}
-                
+
                 {generatedAudio && (
                   <div className="space-y-3 pt-4 border-t">
-                    <audio
-                      id="audio-preview"
-                      src={generatedAudio}
-                      onEnded={() => setIsPlaying(false)}
-                      className="hidden"
-                    />
-                    
                     <div className="space-y-2">
-                      <Button
-                        onClick={togglePlayback}
-                        variant="secondary"
-                        size="sm"
-                        className="w-full"
-                      >
-                        {isPlaying ? <Pause className="w-4 h-4 mr-2" /> : <Play className="w-4 h-4 mr-2" />}
-                        {isPlaying ? 'Pause' : 'Preview'}
-                      </Button>
-                      
-                      <div className="flex gap-2">
+                      <div className="grid grid-cols-2 gap-2">
                         <Button
                           onClick={handleDownload}
-                          className="flex-1 bg-gradient-primary hover:shadow-glow"
+                          className="bg-gradient-primary hover:shadow-glow"
                           size="sm"
                         >
                           <Download className="w-4 h-4 mr-2" />
                           Audio
                         </Button>
-                        
+
                         <Button
                           onClick={handleDownloadSrt}
                           variant="outline"
                           size="sm"
-                          className="flex-1"
                           disabled={affirmationTimings.length === 0}
                         >
                           <Download className="w-4 h-4 mr-2" />
                           .SRT
+                        </Button>
+
+                        <Button
+                          onClick={generateDescription}
+                          variant="outline"
+                          size="sm"
+                          className="col-span-2"
+                          disabled={
+                            isGeneratingDescription ||
+                            !savedScriptTitle ||
+                            affirmationTimings.length === 0
+                          }
+                        >
+                          <Download className="w-4 h-4 mr-2" />
+                          {isGeneratingDescription
+                            ? "Generating..."
+                            : "Description"}
                         </Button>
                       </div>
                     </div>
@@ -594,6 +958,47 @@ I am completely worthy of all the magnificence flowing toward me.`;
                 <span>Show this dialog</span>
               </div>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Script Generation Dialog */}
+      <Dialog open={showScriptDialog} onOpenChange={setShowScriptDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Bot className="w-5 h-5 text-primary" />
+              Generate Script
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div>
+              <Label htmlFor="scriptTitle">Script Title</Label>
+              <Input
+                id="scriptTitle"
+                type="text"
+                placeholder="e.g., 'Daily Affirmations for Success'"
+                value={scriptTitle}
+                onChange={(e) => setScriptTitle(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="scriptDate">Date (for context)</Label>
+              <Input
+                id="scriptDate"
+                type="text"
+                placeholder="e.g., 'July 2025'"
+                value={scriptDate}
+                onChange={(e) => setScriptDate(e.target.value)}
+              />
+            </div>
+            <Button
+              onClick={handleScriptSubmit}
+              disabled={isGeneratingScript}
+              className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-500"
+            >
+              {isGeneratingScript ? "Generating Script..." : "Generate Script"}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

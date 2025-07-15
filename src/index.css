@@ -183,3 +183,14 @@
   border-radius: 4px;
   height: 8px;
 }
+
+/* Remove focus outline for backup textarea */
+.no-focus-outline {
+  --ring: transparent !important;
+}
+
+.no-focus-outline:focus {
+  outline: none !important;
+  border-color: hsl(var(--border)) !important;
+  box-shadow: none !important;
+}

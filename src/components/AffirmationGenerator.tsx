@@ -13,6 +13,8 @@ import {
   Keyboard,
   Bot,
   Key,
+  Copy,
+  FileText,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -62,7 +64,23 @@ const AffirmationGenerator = () => {
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
     null
   );
+  const [showSampleDialog, setShowSampleDialog] = useState(false);
   const { toast } = useToast();
+
+  const sampleAffirmations = `I am worthy of all the love, success, and happiness that flows into my life.
+My mind is clear, focused, and ready to create miracles today.
+I attract abundance in all areas of my life effortlessly.
+I am confident in my ability to overcome any challenge that comes my way.
+Every breath I take fills me with positive energy and vitality.
+I am grateful for this beautiful day and all the blessings it brings.
+My body is healthy, strong, and full of life.
+Success flows to me naturally and easily.
+I am in perfect alignment with my highest purpose.
+My dreams are becoming my reality right now.
+I choose peace over worry, love over fear.
+I am surrounded by supportive and loving people.
+My creativity flows freely and inspires others.
+I trust the process of life and know everything unfolds perfectly.`;
 
   const generateScript = async (title: string, date: string) => {
     if (!a4fApiKey.trim()) {
@@ -666,6 +684,26 @@ ${srtContent}`;
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
+  const copySampleAffirmations = () => {
+    navigator.clipboard
+      .writeText(sampleAffirmations)
+      .then(() => {
+        toast({
+          title: "Copied!",
+          description: "Sample affirmations copied to clipboard.",
+        });
+        setShowSampleDialog(false);
+      })
+      .catch(() => {
+        toast({
+          title: "Copy Failed",
+          description:
+            "Could not copy to clipboard. Please select and copy manually.",
+          variant: "destructive",
+        });
+      });
+  };
+
   return (
     <div className="min-h-screen bg-gradient-bg p-6">
       <div className="max-w-4xl mx-auto space-y-8">
@@ -921,6 +959,42 @@ ${srtContent}`;
           </div>
         </div>
       </div>
+
+      {/* Backup Button - Bottom Left */}
+      <Button
+        onClick={() => setShowSampleDialog(true)}
+        size="sm"
+        variant="outline"
+        className="fixed bottom-4 left-4 z-50 flex items-center gap-2 bg-background/90 backdrop-blur-sm border-primary/20 hover:border-primary/40 shadow-lg"
+      >
+        <FileText className="w-4 h-4" />
+        Backup
+      </Button>
+
+      {/* Sample Affirmations Dialog */}
+      <Dialog open={showSampleDialog} onOpenChange={setShowSampleDialog}>
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-primary" />
+              Sample Affirmations Backup
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Use these sample affirmations to supplement your generated script
+              or as inspiration.
+            </p>
+            <div className="relative">
+              <Textarea
+                value={sampleAffirmations}
+                readOnly
+                className="min-h-[300px] resize-none text-sm no-focus-outline"
+              />
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Shortcuts Dialog */}
       <Dialog open={showShortcuts} onOpenChange={setShowShortcuts}>

@@ -64,7 +64,27 @@ const AffirmationGenerator = () => {
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(
     null
   );
+  const [audioLoading, setAudioLoading] = useState(false);
   const [showSampleDialog, setShowSampleDialog] = useState(false);
+
+  // Image generation states
+  const [bgImagePrompt, setBgImagePrompt] = useState("");
+  const [bgImageLoading, setBgImageLoading] = useState(false);
+  const [generatedBgImage, setGeneratedBgImage] = useState<string | null>(null);
+
+  const [thumbnailPrompt, setThumbnailPrompt] = useState("");
+  const [thumbnailLoading, setThumbnailLoading] = useState(false);
+  const [generatedThumbnail, setGeneratedThumbnail] = useState<string | null>(
+    null
+  );
+
+  // Image modal states
+  const [showImageModal, setShowImageModal] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<{
+    url: string;
+    title: string;
+  } | null>(null);
+
   const { toast } = useToast();
 
   const sampleAffirmations = `I am worthy of all the love, success, and happiness that flows into my life.
@@ -101,7 +121,7 @@ I trust the process of life and know everything unfolds perfectly.`;
         dangerouslyAllowBrowser: true,
       });
 
-      const prompt = `I want you to write 150 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+      const prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
 Use clear, single-line affirmations like in your reference. Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation. Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT!`;
 
       const completion = await a4fClient.chat.completions.create({
@@ -230,9 +250,7 @@ ${srtContent}`;
 
         const a = document.createElement("a");
         a.href = url;
-        a.download = `${savedScriptTitle
-          .replace(/[^a-z0-9]/gi, "_")
-          .toLowerCase()}_description.txt`;
+        a.download = `description.txt`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -255,6 +273,152 @@ ${srtContent}`;
     } finally {
       setIsGeneratingDescription(false);
     }
+  };
+
+  const generateBackgroundImage = async () => {
+    if (!a4fApiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your A4F API key to generate images.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!bgImagePrompt.trim()) {
+      toast({
+        title: "Prompt Required",
+        description: "Please enter a prompt for the background image.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setBgImageLoading(true);
+
+    try {
+      const a4fClient = new OpenAI({
+        apiKey: a4fApiKey,
+        baseURL: "https://api.a4f.co/v1",
+        dangerouslyAllowBrowser: true,
+      });
+
+      const response = await a4fClient.images.generate({
+        model: "provider-3/FLUX.1-dev",
+        prompt: bgImagePrompt,
+        n: 1,
+        size: "1792x1024", // 16:9 ratio
+        quality: "standard",
+      });
+
+      if (response.data && response.data[0] && response.data[0].url) {
+        setGeneratedBgImage(response.data[0].url);
+        toast({
+          title: "Background Image Generated!",
+          description: "Your background image is ready.",
+        });
+      }
+    } catch (error) {
+      console.error("Background image generation failed:", error);
+      toast({
+        title: "Generation Failed",
+        description:
+          "Failed to generate background image. Please check your API key and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setBgImageLoading(false);
+    }
+  };
+
+  const generateThumbnail = async () => {
+    if (!a4fApiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your A4F API key to generate images.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!thumbnailPrompt.trim()) {
+      toast({
+        title: "Prompt Required",
+        description: "Please enter a prompt for the thumbnail.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setThumbnailLoading(true);
+
+    try {
+      const a4fClient = new OpenAI({
+        apiKey: a4fApiKey,
+        baseURL: "https://api.a4f.co/v1",
+        dangerouslyAllowBrowser: true,
+      });
+
+      const response = await a4fClient.images.generate({
+        model: "provider-3/FLUX.1-dev",
+        prompt: thumbnailPrompt,
+        n: 1,
+        size: "1792x1024", // 16:9 ratio
+        quality: "standard",
+      });
+
+      if (response.data && response.data[0] && response.data[0].url) {
+        setGeneratedThumbnail(response.data[0].url);
+        toast({
+          title: "Thumbnail Generated!",
+          description: "Your thumbnail is ready.",
+        });
+      }
+    } catch (error) {
+      console.error("Thumbnail generation failed:", error);
+      toast({
+        title: "Generation Failed",
+        description:
+          "Failed to generate thumbnail. Please check your API key and try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setThumbnailLoading(false);
+    }
+  };
+
+  const downloadImage = async (imageUrl: string, filename: string) => {
+    try {
+      const response = await fetch(imageUrl);
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Image Downloaded!",
+        description: `${filename} has been downloaded successfully.`,
+      });
+    } catch (error) {
+      console.error("Image download failed:", error);
+      toast({
+        title: "Download Failed",
+        description: "Failed to download image. Please try again.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const expandImage = (imageUrl: string, title: string) => {
+    setSelectedImage({ url: imageUrl, title });
+    setShowImageModal(true);
   };
 
   const generateAudioClips = async (affirmationLines: string[]) => {
@@ -301,7 +465,7 @@ ${srtContent}`;
     audioBuffer: AudioBuffer,
     maxPauseLength: number = 0.4
   ): AudioBuffer => {
-    const audioContext = new AudioContext();
+    // Use the same sample rate as the input buffer
     const inputData = audioBuffer.getChannelData(0);
     const sampleRate = audioBuffer.sampleRate;
     const silenceThreshold = 0.01; // Volume threshold for silence detection
@@ -326,8 +490,10 @@ ${srtContent}`;
       }
     }
 
-    // Create new audio buffer with reduced pauses
-    const outputBuffer = audioContext.createBuffer(
+    // Create new audio buffer with reduced pauses using the same sample rate
+    const tempContext = new (window.AudioContext ||
+      (window as any).webkitAudioContext)();
+    const outputBuffer = tempContext.createBuffer(
       1,
       outputData.length,
       sampleRate
@@ -337,6 +503,9 @@ ${srtContent}`;
       outputChannel[i] = outputData[i];
     }
 
+    // Close the temporary context to free resources
+    tempContext.close();
+
     return outputBuffer;
   };
 
@@ -344,70 +513,77 @@ ${srtContent}`;
     audioClips: Blob[],
     affirmationLines: string[]
   ): Promise<Blob> => {
-    const audioContext = new AudioContext();
+    const audioContext = new (window.AudioContext ||
+      (window as any).webkitAudioContext)();
     const audioBuffers: AudioBuffer[] = [];
     const timings: Array<{ text: string; start: number; end: number }> = [];
 
-    // Decode all audio clips and remove internal pauses
-    for (const clip of audioClips) {
-      const arrayBuffer = await clip.arrayBuffer();
-      const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-      const processedBuffer = removeInternalPauses(audioBuffer);
-      audioBuffers.push(processedBuffer);
-    }
-
-    // Calculate total duration with silence gaps
-    const totalDuration =
-      audioBuffers.reduce((sum, buffer) => sum + buffer.duration, 0) +
-      silenceGap * (audioBuffers.length - 1);
-
-    // Create output buffer
-    const sampleRate = audioBuffers[0].sampleRate;
-    const outputBuffer = audioContext.createBuffer(
-      1,
-      totalDuration * sampleRate,
-      sampleRate
-    );
-    const outputData = outputBuffer.getChannelData(0);
-
-    // Combine audio with silence gaps and track timings
-    let currentTime = 0;
-    let currentOffset = 0;
-    for (let i = 0; i < audioBuffers.length; i++) {
-      const buffer = audioBuffers[i];
-      const inputData = buffer.getChannelData(0);
-      const startTime = currentTime;
-      const endTime = currentTime + buffer.duration;
-
-      // Track timing for .srt generation
-      timings.push({
-        text: affirmationLines[i].trim(),
-        start: startTime,
-        end: endTime,
-      });
-
-      // Copy audio data
-      for (let j = 0; j < inputData.length; j++) {
-        outputData[currentOffset + j] = inputData[j];
+    try {
+      // Decode all audio clips and remove internal pauses
+      for (const clip of audioClips) {
+        const arrayBuffer = await clip.arrayBuffer();
+        const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+        const processedBuffer = removeInternalPauses(audioBuffer);
+        audioBuffers.push(processedBuffer);
       }
 
-      currentOffset += inputData.length;
-      currentTime = endTime;
+      // Calculate total duration with silence gaps
+      const totalDuration =
+        audioBuffers.reduce((sum, buffer) => sum + buffer.duration, 0) +
+        silenceGap * (audioBuffers.length - 1);
 
-      // Add silence gap (except after last clip)
-      if (i < audioBuffers.length - 1) {
-        const silenceSamples = silenceGap * sampleRate;
-        // outputData is already initialized to zeros (silence)
-        currentOffset += silenceSamples;
-        currentTime += silenceGap;
+      // Create output buffer
+      const sampleRate = audioBuffers[0].sampleRate;
+      const outputBuffer = audioContext.createBuffer(
+        1,
+        totalDuration * sampleRate,
+        sampleRate
+      );
+      const outputData = outputBuffer.getChannelData(0);
+
+      // Combine audio with silence gaps and track timings
+      let currentTime = 0;
+      let currentOffset = 0;
+      for (let i = 0; i < audioBuffers.length; i++) {
+        const buffer = audioBuffers[i];
+        const inputData = buffer.getChannelData(0);
+        const startTime = currentTime;
+        const endTime = currentTime + buffer.duration;
+
+        // Track timing for .srt generation
+        timings.push({
+          text: affirmationLines[i].trim(),
+          start: startTime,
+          end: endTime,
+        });
+
+        // Copy audio data
+        for (let j = 0; j < inputData.length; j++) {
+          outputData[currentOffset + j] = inputData[j];
+        }
+
+        currentOffset += inputData.length;
+        currentTime = endTime;
+
+        // Add silence gap (except after last clip)
+        if (i < audioBuffers.length - 1) {
+          const silenceSamples = silenceGap * sampleRate;
+          // outputData is already initialized to zeros (silence)
+          currentOffset += silenceSamples;
+          currentTime += silenceGap;
+        }
       }
+
+      // Store timings for .srt generation
+      setAffirmationTimings(timings);
+
+      // Convert back to WAV blob
+      const result = audioBufferToWav(outputBuffer);
+      return result;
+    } finally {
+      // Close the audio context to free resources
+      audioContext.close();
     }
-
-    // Store timings for .srt generation
-    setAffirmationTimings(timings);
-
-    // Convert back to WAV blob
-    return audioBufferToWav(outputBuffer);
   };
 
   const audioBufferToWav = (buffer: AudioBuffer): Blob => {
@@ -531,6 +707,30 @@ ${srtContent}`;
     }
   };
 
+  const handleDownloadScript = () => {
+    if (affirmations.trim() && savedScriptTitle) {
+      const blob = new Blob([affirmations], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${savedScriptTitle
+        .replace(/[<>:"/\\|?*]/g, "_")
+        .replace(/\s+/g, " ")
+        .trim()}.txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      URL.revokeObjectURL(url);
+
+      toast({
+        title: "Script Downloaded!",
+        description: "Script file downloaded successfully.",
+      });
+    }
+  };
+
   const handleDownloadSrt = () => {
     if (affirmationTimings.length > 0) {
       const srtContent = generateSrtContent();
@@ -539,7 +739,12 @@ ${srtContent}`;
 
       const a = document.createElement("a");
       a.href = url;
-      a.download = "affirmations.srt";
+      a.download = savedScriptTitle
+        ? `${savedScriptTitle
+            .replace(/[<>:"/\\|?*]/g, "_")
+            .replace(/\s+/g, " ")
+            .trim()}.srt`
+        : "affirmations.srt";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -567,8 +772,8 @@ ${srtContent}`;
         } else if (event.key.toLowerCase() === "i") {
           newVoice = "af_jessica(1)+af_v0nicole(8)+af_v0(1)";
           shortcutName = "Ivory Affirmation";
-          newSpeed = 0.9;
-          newSilenceGap = 5;
+          newSpeed = 0.8;
+          newSilenceGap = 6;
           event.preventDefault();
         } else if (event.shiftKey && event.key.toLowerCase() === "a") {
           newVoice = "af_nicole(5)+am_echo(1)+af_river(4)";
@@ -624,28 +829,49 @@ ${srtContent}`;
   // Initialize audio element when audio is generated
   useEffect(() => {
     if (generatedAudio) {
+      setAudioLoading(true);
       const audio = new Audio(generatedAudio);
-      audio.addEventListener("loadedmetadata", () => {
+
+      const handleLoadedMetadata = () => {
         setDuration(audio.duration);
-      });
-      audio.addEventListener("timeupdate", () => {
+        setAudioLoading(false);
+      };
+
+      const handleTimeUpdate = () => {
         setCurrentTime(audio.currentTime);
-      });
-      audio.addEventListener("ended", () => {
+      };
+
+      const handleEnded = () => {
         setIsPlaying(false);
         setCurrentTime(0);
-      });
+      };
+
+      const handleError = (e: Event) => {
+        console.error("Audio playback error:", e);
+        setAudioLoading(false);
+        toast({
+          title: "Audio Playback Error",
+          description: "Failed to load audio. Please try regenerating.",
+          variant: "destructive",
+        });
+      };
+
+      audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+      audio.addEventListener("timeupdate", handleTimeUpdate);
+      audio.addEventListener("ended", handleEnded);
+      audio.addEventListener("error", handleError);
       audio.volume = volume;
       setAudioElement(audio);
 
       return () => {
         audio.pause();
-        audio.removeEventListener("loadedmetadata", () => {});
-        audio.removeEventListener("timeupdate", () => {});
-        audio.removeEventListener("ended", () => {});
+        audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+        audio.removeEventListener("timeupdate", handleTimeUpdate);
+        audio.removeEventListener("ended", handleEnded);
+        audio.removeEventListener("error", handleError);
       };
     }
-  }, [generatedAudio]);
+  }, [generatedAudio, volume, toast]);
 
   // Update volume when volume state changes
   useEffect(() => {
@@ -654,14 +880,40 @@ ${srtContent}`;
     }
   }, [volume, audioElement]);
 
-  const togglePlayback = () => {
+  const togglePlayback = async () => {
     if (audioElement) {
-      if (isPlaying) {
-        audioElement.pause();
-      } else {
-        audioElement.play();
+      try {
+        if (isPlaying) {
+          audioElement.pause();
+          setIsPlaying(false);
+        } else {
+          // Ensure audio is loaded before playing
+          if (audioElement.readyState < 2) {
+            // HAVE_CURRENT_DATA
+            await new Promise((resolve) => {
+              const handleCanPlay = () => {
+                audioElement.removeEventListener("canplay", handleCanPlay);
+                resolve(true);
+              };
+              audioElement.addEventListener("canplay", handleCanPlay);
+            });
+          }
+
+          const playPromise = audioElement.play();
+          if (playPromise !== undefined) {
+            await playPromise;
+            setIsPlaying(true);
+          }
+        }
+      } catch (error) {
+        console.error("Audio playback error:", error);
+        toast({
+          title: "Playback Error",
+          description: "Failed to play audio. Please try again.",
+          variant: "destructive",
+        });
+        setIsPlaying(false);
       }
-      setIsPlaying(!isPlaying);
     }
   };
 
@@ -706,47 +958,38 @@ ${srtContent}`;
 
   return (
     <div className="min-h-screen bg-gradient-bg p-6">
-      <div className="max-w-4xl mx-auto space-y-8">
-        {/* Header */}
-        <div className="text-center space-y-4">
-          <h1 className="text-4xl font-bold bg-gradient-primary bg-clip-text text-transparent">
-            Affirmation Audio Generator
-          </h1>
-          <p className="text-muted-foreground max-w-2xl mx-auto">
-            Transform your affirmations into beautiful audio with Kokoro TTS.
-            Create personalized meditation tracks with customizable silence
-            gaps.
-          </p>
-        </div>
-
+      <div className="w-full space-y-8">
         {/* Main Content */}
-        <div className="grid gap-8 lg:grid-cols-3">
+        <div className="grid gap-8 lg:grid-cols-5">
           {/* Input Section */}
           <div className="lg:col-span-2 space-y-6">
             <Card className="bg-gradient-card shadow-card border-0">
               <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Volume2 className="w-5 h-5 text-primary" />
-                  Your Affirmations
+                <CardTitle className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Volume2 className="w-5 h-5 text-primary" />
+                    Script
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Label
+                      htmlFor="a4fApiKey"
+                      className="text-sm font-semibold flex items-center gap-1"
+                    >
+                      <Key className="w-4 h-4 text-primary" />
+                      A4F API Key
+                    </Label>
+                    <Input
+                      id="a4fApiKey"
+                      type="password"
+                      placeholder="Enter your A4F API key..."
+                      value={a4fApiKey}
+                      onChange={(e) => setA4fApiKey(e.target.value)}
+                      className="w-64"
+                    />
+                  </div>
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label
-                    htmlFor="a4fApiKey"
-                    className="flex items-center gap-2"
-                  >
-                    <Key className="w-4 h-4 text-primary" />
-                    A4F API Key
-                  </Label>
-                  <Input
-                    id="a4fApiKey"
-                    type="password"
-                    placeholder="Enter your A4F API key..."
-                    value={a4fApiKey}
-                    onChange={(e) => setA4fApiKey(e.target.value)}
-                  />
-                </div>
                 <Textarea
                   placeholder="Enter your affirmations, one per line..."
                   value={affirmations}
@@ -758,17 +1001,14 @@ ${srtContent}`;
                   variant="outline"
                   onClick={handleGenerateScript}
                   disabled={isGeneratingScript}
-                  className="w-full bg-gradient-primary text-white hover:shadow-glow"
+                  className="w-full bg-gradient-primary text-white hover:bg-gradient-primary hover:text-white hover:shadow-glow"
                 >
-                  <Bot className="w-4 h-4 mr-2" />
+                  <Bot className="w-4 h-4 mr-0.5" />
                   {isGeneratingScript ? "Generating..." : "Generate Script"}
                 </Button>
 
                 {generatedAudio && (
                   <div className="mt-4 p-4 bg-muted/30 rounded-lg border">
-                    <h4 className="text-sm font-medium mb-2">
-                      Generated Audio
-                    </h4>
                     <div className="space-y-3">
                       {/* Play/Pause and Time Display */}
                       <div className="flex items-center gap-3">
@@ -777,8 +1017,11 @@ ${srtContent}`;
                           size="sm"
                           variant="outline"
                           className="flex-shrink-0"
+                          disabled={!audioElement || audioLoading}
                         >
-                          {isPlaying ? (
+                          {audioLoading ? (
+                            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                          ) : isPlaying ? (
                             <Pause className="w-4 h-4" />
                           ) : (
                             <Play className="w-4 h-4" />
@@ -833,7 +1076,7 @@ ${srtContent}`;
           </div>
 
           {/* Settings Section */}
-          <div className="space-y-6">
+          <div className="lg:col-span-1 space-y-6">
             <Card className="bg-gradient-card shadow-card border-0">
               <CardHeader>
                 <CardTitle>Voice Settings</CardTitle>
@@ -920,7 +1163,7 @@ ${srtContent}`;
                           className="bg-gradient-primary hover:shadow-glow"
                           size="sm"
                         >
-                          <Download className="w-4 h-4 mr-2" />
+                          <Download className="w-4 h-4 mr-0.5" />
                           Audio
                         </Button>
 
@@ -930,7 +1173,7 @@ ${srtContent}`;
                           size="sm"
                           disabled={affirmationTimings.length === 0}
                         >
-                          <Download className="w-4 h-4 mr-2" />
+                          <Download className="w-4 h-4 mr-0.5" />
                           .SRT
                         </Button>
 
@@ -938,22 +1181,192 @@ ${srtContent}`;
                           onClick={generateDescription}
                           variant="outline"
                           size="sm"
-                          className="col-span-2"
                           disabled={
                             isGeneratingDescription ||
                             !savedScriptTitle ||
                             affirmationTimings.length === 0
                           }
                         >
-                          <Download className="w-4 h-4 mr-2" />
+                          <Download className="w-4 h-4 mr-0.5" />
                           {isGeneratingDescription
                             ? "Generating..."
                             : "Description"}
+                        </Button>
+
+                        <Button
+                          onClick={handleDownloadScript}
+                          variant="outline"
+                          size="sm"
+                          disabled={!affirmations.trim() || !savedScriptTitle}
+                        >
+                          <Download className="w-4 h-4 mr-0.5" />
+                          Script
                         </Button>
                       </div>
                     </div>
                   </div>
                 )}
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Background Image Generation */}
+          <div className="lg:col-span-1 space-y-6">
+            <Card className="bg-gradient-card shadow-card border-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Background Image</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <Label htmlFor="bgImagePrompt" className="text-xs">
+                    Prompt
+                  </Label>
+                  <Textarea
+                    id="bgImagePrompt"
+                    placeholder="Enter prompt for background image..."
+                    value={bgImagePrompt}
+                    onChange={(e) => setBgImagePrompt(e.target.value)}
+                    className="min-h-[80px] resize-none text-xs"
+                  />
+                </div>
+
+                <Button
+                  onClick={generateBackgroundImage}
+                  disabled={bgImageLoading || !bgImagePrompt.trim()}
+                  className="w-full bg-gradient-primary hover:shadow-glow"
+                  size="sm"
+                >
+                  {bgImageLoading ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    "Generate"
+                  )}
+                </Button>
+
+                {/* Image Display */}
+                <div className="aspect-video bg-muted/30 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden relative">
+                  {generatedBgImage ? (
+                    <>
+                      <img
+                        src={generatedBgImage}
+                        alt="Generated Background"
+                        className="w-full h-full object-cover cursor-pointer"
+                        onClick={() =>
+                          expandImage(generatedBgImage, "Background Image")
+                        }
+                      />
+                      <div className="absolute top-2 right-2 flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
+                          onClick={() =>
+                            downloadImage(
+                              generatedBgImage,
+                              "background_image.png"
+                            )
+                          }
+                        >
+                          <Download className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
+                          onClick={() =>
+                            expandImage(generatedBgImage, "Background Image")
+                          }
+                        >
+                          <div className="w-3 h-3 text-white">⤢</div>
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-center text-muted-foreground text-xs">
+                      <div className="w-8 h-8 mx-auto mb-2 bg-muted/50 rounded"></div>
+                      Background Image
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Thumbnail Generation */}
+          <div className="lg:col-span-1 space-y-6">
+            <Card className="bg-gradient-card shadow-card border-0">
+              <CardHeader>
+                <CardTitle className="text-sm">Thumbnail</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <Label htmlFor="thumbnailPrompt" className="text-xs">
+                    Prompt
+                  </Label>
+                  <Textarea
+                    id="thumbnailPrompt"
+                    placeholder="Enter prompt for thumbnail..."
+                    value={thumbnailPrompt}
+                    onChange={(e) => setThumbnailPrompt(e.target.value)}
+                    className="min-h-[80px] resize-none text-xs"
+                  />
+                </div>
+
+                <Button
+                  onClick={generateThumbnail}
+                  disabled={thumbnailLoading || !thumbnailPrompt.trim()}
+                  className="w-full bg-gradient-primary hover:shadow-glow"
+                  size="sm"
+                >
+                  {thumbnailLoading ? (
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    "Generate"
+                  )}
+                </Button>
+
+                {/* Image Display */}
+                <div className="aspect-video bg-muted/30 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden relative">
+                  {generatedThumbnail ? (
+                    <>
+                      <img
+                        src={generatedThumbnail}
+                        alt="Generated Thumbnail"
+                        className="w-full h-full object-cover cursor-pointer"
+                        onClick={() =>
+                          expandImage(generatedThumbnail, "Thumbnail")
+                        }
+                      />
+                      <div className="absolute top-2 right-2 flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
+                          onClick={() =>
+                            downloadImage(generatedThumbnail, "thumbnail.png")
+                          }
+                        >
+                          <Download className="w-3 h-3" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
+                          onClick={() =>
+                            expandImage(generatedThumbnail, "Thumbnail")
+                          }
+                        >
+                          <div className="w-3 h-3 text-white">⤢</div>
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="text-center text-muted-foreground text-xs">
+                      <div className="w-8 h-8 mx-auto mb-2 bg-muted/50 rounded"></div>
+                      Thumbnail
+                    </div>
+                  )}
+                </div>
               </CardContent>
             </Card>
           </div>
@@ -965,7 +1378,7 @@ ${srtContent}`;
         onClick={() => setShowSampleDialog(true)}
         size="sm"
         variant="outline"
-        className="fixed bottom-4 left-4 z-50 flex items-center gap-2 bg-background/90 backdrop-blur-sm border-primary/20 hover:border-primary/40 shadow-lg"
+        className="fixed bottom-4 left-4 z-50 flex items-center gap-0.5 bg-background/90 backdrop-blur-sm border-primary/20 hover:border-primary/40 shadow-lg"
       >
         <FileText className="w-4 h-4" />
         Backup
@@ -1073,6 +1486,46 @@ ${srtContent}`;
             >
               {isGeneratingScript ? "Generating Script..." : "Generate Script"}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Image Expansion Modal */}
+      <Dialog open={showImageModal} onOpenChange={setShowImageModal}>
+        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <div className="w-5 h-5 text-primary">🖼️</div>
+              {selectedImage?.title}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto flex items-center justify-center p-4">
+            {selectedImage && (
+              <div className="relative">
+                <img
+                  src={selectedImage.url}
+                  alt={selectedImage.title}
+                  className="max-w-full max-h-full object-contain rounded-lg"
+                />
+                <div className="absolute top-4 right-4">
+                  <Button
+                    onClick={() =>
+                      downloadImage(
+                        selectedImage.url,
+                        `${selectedImage.title
+                          .toLowerCase()
+                          .replace(/\s+/g, "_")}.png`
+                      )
+                    }
+                    className="bg-black/50 hover:bg-black/70 text-white"
+                    size="sm"
+                  >
+                    <Download className="w-4 h-4 mr-1" />
+                    Download
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </DialogContent>
       </Dialog>

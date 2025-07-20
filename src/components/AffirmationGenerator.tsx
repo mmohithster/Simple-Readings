@@ -15,6 +15,7 @@ import {
   Key,
   Copy,
   FileText,
+  Settings,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -23,7 +24,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Separator } from "@/components/ui/separator";
 import OpenAI from "openai";
+import { AudioEqualizer } from "@/components/AudioEqualizer";
 
 interface VoiceSettings {
   model: string;
@@ -37,6 +40,22 @@ const AffirmationGenerator = () => {
     // Load API key from localStorage on component mount
     return localStorage.getItem("a4f-api-key") || "";
   });
+  const [selectedModel, setSelectedModel] = useState(() => {
+    return localStorage.getItem("selected-model") || "provider-6/gpt-4.1";
+  });
+  const [selectedProvider, setSelectedProvider] = useState(() => {
+    return localStorage.getItem("selected-provider") || "https://api.a4f.co/v1";
+  });
+  const [selectedProviderType, setSelectedProviderType] = useState(() => {
+    return localStorage.getItem("selected-provider-type") || "a4f";
+  });
+  const [openRouterApiKey, setOpenRouterApiKey] = useState(() => {
+    return localStorage.getItem("openrouter-api-key") || "";
+  });
+  const [openRouterModel, setOpenRouterModel] = useState(() => {
+    return localStorage.getItem("openrouter-model") || "openai/gpt-4o";
+  });
+  const [lastApiCall, setLastApiCall] = useState(0);
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
     model: "kokoro",
     voice: "af_bella(3)+af_v0nicole(6)+af_kore(1)",
@@ -56,6 +75,12 @@ const AffirmationGenerator = () => {
   const [scriptTitle, setScriptTitle] = useState("");
   const [scriptDate, setScriptDate] = useState("");
   const [savedScriptTitle, setSavedScriptTitle] = useState("");
+  const [showTranscriptDialog, setShowTranscriptDialog] = useState(false);
+  const [transcript, setTranscript] = useState("");
+  const [customPrompt, setCustomPrompt] = useState("");
+  const [scriptType, setScriptType] = useState<"affirmation" | "meditation">(
+    "affirmation"
+  );
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -85,7 +110,66 @@ const AffirmationGenerator = () => {
     title: string;
   } | null>(null);
 
+  // Audio Equalizer states
+  const [showEqualizer, setShowEqualizer] = useState(false);
+  const [processedAudio, setProcessedAudio] = useState<string | null>(null);
+  const [eqSettings, setEqSettings] = useState<{
+    bands: Array<{ frequency: number; gain: number; label: string }>;
+    selectedPreset: string;
+    pitchShift: number;
+    usePronounced: boolean;
+    reverbEnabled: boolean;
+    reverbAmount: number;
+  } | null>(null);
+  const [autoApplyEQ, setAutoApplyEQ] = useState(false);
+
   const { toast } = useToast();
+
+  // Rate limiting function for API calls
+  const checkRateLimit = () => {
+    const now = Date.now();
+    const timeSinceLastCall = now - lastApiCall;
+    const minInterval = 5000; // 5 seconds between calls for OpenRouter
+
+    if (timeSinceLastCall < minInterval) {
+      const waitTime = Math.ceil((minInterval - timeSinceLastCall) / 1000);
+      toast({
+        title: "Rate Limited",
+        description: `Please wait ${waitTime} seconds before making another request.`,
+        variant: "destructive",
+      });
+      return false;
+    }
+
+    setLastApiCall(now);
+    return true;
+  };
+
+  // Retry function for OpenRouter API calls
+  const retryOpenRouterCall = async (
+    apiCall: () => Promise<any>,
+    maxRetries = 3
+  ) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await apiCall();
+      } catch (error: any) {
+        if (error.message.includes("429") && attempt < maxRetries) {
+          const waitTime = Math.pow(2, attempt) * 1000; // Exponential backoff: 2s, 4s, 8s
+          toast({
+            title: "Rate Limited - Retrying",
+            description: `Attempt ${attempt}/${maxRetries}. Waiting ${
+              waitTime / 1000
+            }s before retry...`,
+            variant: "destructive",
+          });
+          await new Promise((resolve) => setTimeout(resolve, waitTime));
+          continue;
+        }
+        throw error;
+      }
+    }
+  };
 
   const sampleAffirmations = `I am worthy of all the love, success, and happiness that flows into my life.
 My mind is clear, focused, and ready to create miracles today.
@@ -103,10 +187,14 @@ My creativity flows freely and inspires others.
 I trust the process of life and know everything unfolds perfectly.`;
 
   const generateScript = async (title: string, date: string) => {
-    if (!a4fApiKey.trim()) {
+    const apiKey =
+      selectedProviderType === "a4f" ? a4fApiKey : openRouterApiKey;
+    const apiKeyName = selectedProviderType === "a4f" ? "A4F" : "OpenRouter";
+
+    if (!apiKey.trim()) {
       toast({
         title: "API Key Required",
-        description: "Please enter your A4F API key to generate scripts.",
+        description: `Please enter your ${apiKeyName} API key to generate scripts.`,
         variant: "destructive",
       });
       return;
@@ -114,22 +202,131 @@ I trust the process of life and know everything unfolds perfectly.`;
 
     setIsGeneratingScript(true);
 
+    // Check rate limit for OpenRouter
+    if (selectedProviderType === "openrouter" && !checkRateLimit()) {
+      setIsGeneratingScript(false);
+      return;
+    }
+
     try {
-      const a4fClient = new OpenAI({
-        apiKey: a4fApiKey,
-        baseURL: "https://api.a4f.co/v1",
-        dangerouslyAllowBrowser: true,
-      });
+      let completion;
 
-      const prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
-Use clear, single-line affirmations like in your reference. Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation. Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT!`;
+      if (selectedProviderType === "a4f") {
+        const a4fClient = new OpenAI({
+          apiKey: a4fApiKey,
+          baseURL: selectedProvider,
+          dangerouslyAllowBrowser: true,
+        });
 
-      const completion = await a4fClient.chat.completions.create({
-        model: "provider-3/grok-4-0709",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 4000,
-      });
+        // Use custom prompt if provided, otherwise use default based on script type
+        let prompt = customPrompt.trim();
+
+        if (!prompt) {
+          if (scriptType === "affirmation") {
+            prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+Use clear, single-line affirmations like in your reference.${
+              date
+                ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
+                : ""
+            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! Use ${transcript} as inspiration and structure if provided, it will be the reference. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+          } else {
+            prompt = `Write a (1500-1800) words long script similar to, and inspired from ${transcript}. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+          }
+        }
+
+        // Replace placeholders in the prompt
+        let finalPrompt = prompt
+          .replace(/\${title}/g, title)
+          .replace(/\${date}/g, date)
+          .replace(
+            /\${transcript}/g,
+            transcript ? cleanTranscript(transcript) : ""
+          );
+
+        // Add transcript reference if provided
+        if (transcript.trim()) {
+          const cleanedTranscript = cleanTranscript(transcript);
+          finalPrompt += `\n\nReference transcript for context and style:\n${cleanedTranscript}`;
+        }
+
+        completion = await a4fClient.chat.completions.create({
+          model: selectedModel,
+          messages: [{ role: "user", content: finalPrompt }],
+          temperature: 0.7,
+          max_tokens: 4000,
+        });
+      } else {
+        // OpenRouter API call with retry logic
+        // Use custom prompt if provided, otherwise use default based on script type
+        let prompt = customPrompt.trim();
+
+        if (!prompt) {
+          if (scriptType === "affirmation") {
+            prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations. Use clear, single-line affirmations.${
+              date
+                ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
+                : ""
+            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! Use ${transcript} as inspiration and structure if provided, it will be the reference. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+          } else {
+            prompt = `Write a (1500-1800) words long script similar to, and inspired from ${transcript}. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+          }
+        }
+
+        // Replace placeholders in the prompt
+        let finalPrompt = prompt
+          .replace(/\${title}/g, title)
+          .replace(/\${date}/g, date)
+          .replace(
+            /\${transcript}/g,
+            transcript ? cleanTranscript(transcript) : ""
+          );
+
+        // Add transcript reference if provided
+        if (transcript.trim()) {
+          const cleanedTranscript = cleanTranscript(transcript);
+          finalPrompt += `\n\nReference transcript for context and style:\n${cleanedTranscript}`;
+        }
+
+        const apiCall = async () => {
+          const response = await fetch(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${openRouterApiKey}`,
+                "HTTP-Referer": window.location.origin,
+                "X-Title": "Affirmation Audio Weaver",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                model: openRouterModel,
+                messages: [
+                  {
+                    role: "user",
+                    content: finalPrompt,
+                  },
+                ],
+                temperature: 0.7,
+                max_tokens: 4000,
+              }),
+            }
+          );
+
+          if (!response.ok) {
+            if (response.status === 429) {
+              throw new Error("429");
+            } else {
+              throw new Error(
+                `OpenRouter API error: ${response.status} ${response.statusText}`
+              );
+            }
+          }
+
+          return await response.json();
+        };
+
+        completion = await retryOpenRouterCall(apiCall);
+      }
 
       const generatedScript = completion.choices[0].message.content;
 
@@ -163,22 +360,36 @@ Use clear, single-line affirmations like in your reference. Some affirmations sh
   };
 
   const handleGenerateScript = () => {
-    if (!a4fApiKey.trim()) {
+    const apiKey =
+      selectedProviderType === "a4f" ? a4fApiKey : openRouterApiKey;
+    const apiKeyName = selectedProviderType === "a4f" ? "A4F" : "OpenRouter";
+
+    if (!apiKey.trim()) {
       toast({
         title: "API Key Required",
-        description: "Please enter your A4F API key first.",
+        description: `Please enter your ${apiKeyName} API key first.`,
         variant: "destructive",
       });
       return;
     }
+
+    // Debug OpenRouter connection
+    if (selectedProviderType === "openrouter") {
+      console.log("OpenRouter Debug Info:", {
+        apiKeyLength: openRouterApiKey.length,
+        model: openRouterModel,
+        hasApiKey: !!openRouterApiKey.trim(),
+      });
+    }
+
     setShowScriptDialog(true);
   };
 
   const handleScriptSubmit = () => {
-    if (!scriptTitle.trim() || !scriptDate.trim()) {
+    if (!scriptTitle.trim()) {
       toast({
         title: "Missing Information",
-        description: "Please enter both title and date.",
+        description: "Please enter a script title.",
         variant: "destructive",
       });
       return;
@@ -187,10 +398,14 @@ Use clear, single-line affirmations like in your reference. Some affirmations sh
   };
 
   const generateDescription = async () => {
-    if (!a4fApiKey.trim()) {
+    const apiKey =
+      selectedProviderType === "a4f" ? a4fApiKey : openRouterApiKey;
+    const apiKeyName = selectedProviderType === "a4f" ? "A4F" : "OpenRouter";
+
+    if (!apiKey.trim()) {
       toast({
         title: "API Key Required",
-        description: "Please enter your A4F API key to generate descriptions.",
+        description: `Please enter your ${apiKeyName} API key to generate descriptions.`,
         variant: "destructive",
       });
       return;
@@ -217,29 +432,89 @@ Use clear, single-line affirmations like in your reference. Some affirmations sh
 
     setIsGeneratingDescription(true);
 
+    // Check rate limit for OpenRouter
+    if (selectedProviderType === "openrouter" && !checkRateLimit()) {
+      setIsGeneratingDescription(false);
+      return;
+    }
+
     try {
-      const a4fClient = new OpenAI({
-        apiKey: a4fApiKey,
-        baseURL: "https://api.a4f.co/v1",
-        dangerouslyAllowBrowser: true,
-      });
+      let completion;
 
-      // Create content from affirmations for the prompt
-      const srtContent = affirmationTimings
-        .map((timing) => timing.text)
-        .join("\n");
+      if (selectedProviderType === "a4f") {
+        const a4fClient = new OpenAI({
+          apiKey: a4fApiKey,
+          baseURL: selectedProvider,
+          dangerouslyAllowBrowser: true,
+        });
 
-      const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
+        // Create content from affirmations for the prompt
+        const srtContent = affirmationTimings
+          .map((timing) => timing.text)
+          .join("\n");
+
+        const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
 
 SRT Content:
 ${srtContent}`;
 
-      const completion = await a4fClient.chat.completions.create({
-        model: "provider-3/grok-4-0709",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 500,
-      });
+        completion = await a4fClient.chat.completions.create({
+          model: selectedModel,
+          messages: [{ role: "user", content: prompt }],
+          temperature: 0.7,
+          max_tokens: 500,
+        });
+      } else {
+        // OpenRouter API call for description with retry logic
+        const srtContent = affirmationTimings
+          .map((timing) => timing.text)
+          .join("\n");
+
+        const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
+
+SRT Content:
+${srtContent}`;
+
+        const apiCall = async () => {
+          const response = await fetch(
+            "https://openrouter.ai/api/v1/chat/completions",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${openRouterApiKey}`,
+                "HTTP-Referer": window.location.origin,
+                "X-Title": "Affirmation Audio Weaver",
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                model: openRouterModel,
+                messages: [
+                  {
+                    role: "user",
+                    content: prompt,
+                  },
+                ],
+                temperature: 0.7,
+                max_tokens: 500,
+              }),
+            }
+          );
+
+          if (!response.ok) {
+            if (response.status === 429) {
+              throw new Error("429");
+            } else {
+              throw new Error(
+                `OpenRouter API error: ${response.status} ${response.statusText}`
+              );
+            }
+          }
+
+          return await response.json();
+        };
+
+        completion = await retryOpenRouterCall(apiCall);
+      }
 
       const generatedDescription = completion.choices[0].message.content;
 
@@ -299,7 +574,7 @@ ${srtContent}`;
     try {
       const a4fClient = new OpenAI({
         apiKey: a4fApiKey,
-        baseURL: "https://api.a4f.co/v1",
+        baseURL: selectedProvider,
         dangerouslyAllowBrowser: true,
       });
 
@@ -355,7 +630,7 @@ ${srtContent}`;
     try {
       const a4fClient = new OpenAI({
         apiKey: a4fApiKey,
-        baseURL: "https://api.a4f.co/v1",
+        baseURL: selectedProvider,
         dangerouslyAllowBrowser: true,
       });
 
@@ -637,6 +912,11 @@ ${srtContent}`;
     setIsGenerating(true);
     setProgress(0);
     setGeneratedAudio(null);
+    setProcessedAudio(null);
+    // Don't reset EQ settings if auto-apply is enabled
+    if (!autoApplyEQ) {
+      setEqSettings(null);
+    }
 
     try {
       const lines = affirmations.split("\n").filter((line) => line.trim());
@@ -655,10 +935,208 @@ ${srtContent}`;
       const audioUrl = URL.createObjectURL(combinedAudio);
       setGeneratedAudio(audioUrl);
 
-      toast({
-        title: "Generation Complete!",
-        description: "Your affirmation audio is ready for download.",
-      });
+      // Auto-apply EQ if enabled OR if EQ settings exist (manual application)
+      if ((autoApplyEQ || eqSettings) && eqSettings) {
+        try {
+          // Create a temporary AudioEqualizer instance to process the audio
+          const processAudioWithEQ = async () => {
+            const audioContext = new AudioContext();
+            const response = await fetch(audioUrl);
+            const arrayBuffer = await response.arrayBuffer();
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+            // Calculate new buffer length based on pitch shift
+            const pitchRatio = Math.pow(2, eqSettings.pitchShift / 12);
+            const newLength = Math.floor(audioBuffer.length / pitchRatio);
+
+            // Create offline audio context for processing
+            const offlineContext = new OfflineAudioContext(
+              audioBuffer.numberOfChannels,
+              newLength,
+              audioBuffer.sampleRate
+            );
+
+            // Create source
+            const offlineSource = offlineContext.createBufferSource();
+            offlineSource.buffer = audioBuffer;
+
+            // Apply pitch shift using playback rate
+            offlineSource.playbackRate.setValueAtTime(
+              pitchRatio,
+              offlineContext.currentTime
+            );
+
+            // Create filters for offline processing
+            const offlineFilters = eqSettings.bands.map((band, index) => {
+              const filter = offlineContext.createBiquadFilter();
+              filter.type =
+                index === 0
+                  ? "lowshelf"
+                  : index === eqSettings.bands.length - 1
+                  ? "highshelf"
+                  : "peaking";
+              filter.frequency.setValueAtTime(
+                band.frequency,
+                offlineContext.currentTime
+              );
+              filter.Q.setValueAtTime(1, offlineContext.currentTime);
+              filter.gain.setValueAtTime(band.gain, offlineContext.currentTime);
+              return filter;
+            });
+
+            // Create reverb nodes for offline processing
+            const offlineConvolver = offlineContext.createConvolver();
+            const createImpulseResponse = (
+              audioContext: BaseAudioContext,
+              duration: number,
+              decay: number
+            ): AudioBuffer => {
+              const sampleRate = audioContext.sampleRate;
+              const length = sampleRate * duration;
+              const impulse = audioContext.createBuffer(2, length, sampleRate);
+
+              for (let channel = 0; channel < 2; channel++) {
+                const channelData = impulse.getChannelData(channel);
+                for (let i = 0; i < length; i++) {
+                  const n = length - i;
+                  const sample =
+                    (Math.random() * 2 - 1) * Math.pow(n / length, decay);
+                  channelData[i] =
+                    i > 0 ? sample * 0.03 + channelData[i - 1] * 0.97 : sample;
+                }
+              }
+              return impulse;
+            };
+
+            const offlineImpulseResponse = createImpulseResponse(
+              offlineContext,
+              2.0,
+              2.0
+            );
+            offlineConvolver.buffer = offlineImpulseResponse;
+
+            // Create gain nodes for offline processing
+            const offlineReverbGain = offlineContext.createGain();
+            const offlineDryGain = offlineContext.createGain();
+            const offlineGain = offlineContext.createGain();
+
+            // Set gains
+            offlineGain.gain.setValueAtTime(0.8, offlineContext.currentTime);
+            offlineDryGain.gain.setValueAtTime(1.0, offlineContext.currentTime);
+            const reverbLevel = eqSettings.reverbEnabled
+              ? eqSettings.reverbAmount / 100
+              : 0;
+            offlineReverbGain.gain.setValueAtTime(
+              reverbLevel,
+              offlineContext.currentTime
+            );
+
+            // Connect nodes with reverb
+            offlineSource.connect(offlineFilters[0]);
+            offlineFilters.forEach((filter, index) => {
+              if (index < offlineFilters.length - 1) {
+                filter.connect(offlineFilters[index + 1]);
+              } else {
+                filter.connect(offlineDryGain);
+                filter.connect(offlineConvolver);
+              }
+            });
+
+            offlineConvolver.connect(offlineReverbGain);
+            offlineDryGain.connect(offlineGain);
+            offlineReverbGain.connect(offlineGain);
+            offlineGain.connect(offlineContext.destination);
+
+            offlineSource.start();
+            const processedBuffer = await offlineContext.startRendering();
+
+            // Convert to WAV blob
+            const audioBufferToWav = (buffer: AudioBuffer): Blob => {
+              const length = buffer.length;
+              const numberOfChannels = buffer.numberOfChannels;
+              const sampleRate = buffer.sampleRate;
+              const bytesPerSample = 2;
+              const blockAlign = numberOfChannels * bytesPerSample;
+              const byteRate = sampleRate * blockAlign;
+              const dataSize = length * blockAlign;
+              const bufferSize = 44 + dataSize;
+              const arrayBuffer = new ArrayBuffer(bufferSize);
+              const view = new DataView(arrayBuffer);
+
+              const writeString = (offset: number, string: string) => {
+                for (let i = 0; i < string.length; i++) {
+                  view.setUint8(offset + i, string.charCodeAt(i));
+                }
+              };
+
+              writeString(0, "RIFF");
+              view.setUint32(4, bufferSize - 8, true);
+              writeString(8, "WAVE");
+              writeString(12, "fmt ");
+              view.setUint32(16, 16, true);
+              view.setUint16(20, 1, true);
+              view.setUint16(22, numberOfChannels, true);
+              view.setUint32(24, sampleRate, true);
+              view.setUint32(28, byteRate, true);
+              view.setUint16(32, blockAlign, true);
+              view.setUint16(34, bytesPerSample * 8, true);
+              writeString(36, "data");
+              view.setUint32(40, dataSize, true);
+
+              let offset = 44;
+              for (let i = 0; i < length; i++) {
+                for (let channel = 0; channel < numberOfChannels; channel++) {
+                  const sample = Math.max(
+                    -1,
+                    Math.min(1, buffer.getChannelData(channel)[i])
+                  );
+                  view.setInt16(
+                    offset,
+                    sample < 0 ? sample * 0x8000 : sample * 0x7fff,
+                    true
+                  );
+                  offset += 2;
+                }
+              }
+
+              return new Blob([arrayBuffer], { type: "audio/wav" });
+            };
+
+            const wavBlob = audioBufferToWav(processedBuffer);
+            const processedUrl = URL.createObjectURL(wavBlob);
+
+            // Update the audio with processed version
+            setGeneratedAudio(processedUrl);
+            setProcessedAudio(processedUrl);
+            setAutoApplyEQ(false); // Reset the flag
+
+            toast({
+              title: "Auto EQ Applied!",
+              description: `Applied ${eqSettings.selectedPreset} preset with ${
+                eqSettings.pitchShift > 0 ? "+" : ""
+              }${eqSettings.pitchShift} pitch and ${
+                eqSettings.reverbAmount
+              }% reverb.`,
+            });
+          };
+
+          processAudioWithEQ();
+        } catch (error) {
+          console.error("Auto EQ processing failed:", error);
+          toast({
+            title: "Auto EQ Failed",
+            description:
+              "Failed to apply automatic EQ. You can still apply effects manually.",
+            variant: "destructive",
+          });
+          setAutoApplyEQ(false);
+        }
+      } else {
+        toast({
+          title: "Generation Complete!",
+          description: "Your affirmation audio is ready for download.",
+        });
+      }
     } catch (error) {
       console.error("Generation failed:", error);
       toast({
@@ -697,13 +1175,23 @@ ${srtContent}`;
   };
 
   const handleDownload = () => {
-    if (generatedAudio) {
+    // Use processed audio if available (with EQ effects), otherwise use original
+    const audioToDownload = processedAudio || generatedAudio;
+
+    if (audioToDownload) {
       const a = document.createElement("a");
-      a.href = generatedAudio;
+      a.href = audioToDownload;
       a.download = "affirmations.wav";
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+
+      toast({
+        title: "Audio Downloaded!",
+        description: processedAudio
+          ? "Downloaded audio with EQ effects applied."
+          : "Downloaded original audio.",
+      });
     }
   };
 
@@ -761,37 +1249,20 @@ ${srtContent}`;
         let shortcutName = "";
         let newSpeed = 0.9;
         let newSilenceGap = 1;
+        let autoApplyEQ = false;
 
-        if (event.shiftKey && event.key.toLowerCase() === "s") {
-          newVoice =
-            "am_eric(1)+am_fenrir(1)+am_liam(1)+am_michael(1)+af_jadzia(1)+af_nicole(1)+am_v0gurney(4)";
-          shortcutName = "Spiritual Sattva";
-          newSpeed = 0.9;
-          newSilenceGap = 1;
-          event.preventDefault();
-        } else if (event.key.toLowerCase() === "i") {
+        if (event.key.toLowerCase() === "i") {
           newVoice = "af_jessica(1)+af_v0nicole(8)+af_v0(1)";
           shortcutName = "Ivory Affirmation";
           newSpeed = 0.8;
           newSilenceGap = 6;
           event.preventDefault();
-        } else if (event.shiftKey && event.key.toLowerCase() === "a") {
-          newVoice = "af_nicole(5)+am_echo(1)+af_river(4)";
-          shortcutName = "Astral Embrace";
-          newSpeed = 0.8;
-          newSilenceGap = 1;
-          event.preventDefault();
-        } else if (event.key.toLowerCase() === "e") {
-          newVoice = "af_nicole(3)+am_echo(4)+am_eric(2)+am_v0gurney(1)";
-          shortcutName = "Nightly Science";
-          newSpeed = 0.83;
-          newSilenceGap = 1;
-          event.preventDefault();
         } else if (event.key.toLowerCase() === "g") {
-          newVoice = "af_nicole(4)+am_liam(5)+am_v0gurney(1)";
-          shortcutName = "Starlit Science";
-          newSpeed = 0.83;
-          newSilenceGap = 1;
+          newVoice = "af_v0nicole(3)+am_v0gurney(2)+am_echo(5)";
+          shortcutName = "Gradient Voice";
+          newSpeed = 0.8;
+          newSilenceGap = 1.5;
+          autoApplyEQ = true;
           event.preventDefault();
         } else if (event.key.toLowerCase() === "m") {
           setShowShortcuts(true);
@@ -805,9 +1276,34 @@ ${srtContent}`;
             speed: newSpeed,
           }));
           setSilenceGap(newSilenceGap);
+
+          // Auto-apply EQ settings for Gradient Voice
+          if (autoApplyEQ) {
+            setEqSettings({
+              bands: [
+                { frequency: 80, gain: -1, label: "Bass" },
+                { frequency: 200, gain: 0, label: "Low Mid" },
+                { frequency: 500, gain: 1, label: "Mid" },
+                { frequency: 1000, gain: 2, label: "Upper Mid" },
+                { frequency: 2000, gain: 3, label: "Presence" },
+                { frequency: 4000, gain: 4, label: "Clarity" },
+                { frequency: 8000, gain: 3, label: "Brilliance" },
+                { frequency: 12000, gain: 2, label: "Air" },
+              ],
+              selectedPreset: "Bright Voice",
+              pitchShift: -1,
+              usePronounced: false,
+              reverbEnabled: true,
+              reverbAmount: 15,
+            });
+            setAutoApplyEQ(true);
+          }
+
           toast({
             title: "Voice Changed",
-            description: `Switched to ${shortcutName}`,
+            description: `Switched to ${shortcutName}${
+              autoApplyEQ ? " with auto EQ" : ""
+            }`,
           });
         }
       }
@@ -817,7 +1313,7 @@ ${srtContent}`;
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [toast]);
 
-  // Save API key to localStorage whenever it changes
+  // Save API key and settings to localStorage whenever they change
   useEffect(() => {
     if (a4fApiKey) {
       localStorage.setItem("a4f-api-key", a4fApiKey);
@@ -825,6 +1321,30 @@ ${srtContent}`;
       localStorage.removeItem("a4f-api-key");
     }
   }, [a4fApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("selected-model", selectedModel);
+  }, [selectedModel]);
+
+  useEffect(() => {
+    localStorage.setItem("selected-provider", selectedProvider);
+  }, [selectedProvider]);
+
+  useEffect(() => {
+    localStorage.setItem("selected-provider-type", selectedProviderType);
+  }, [selectedProviderType]);
+
+  useEffect(() => {
+    if (openRouterApiKey) {
+      localStorage.setItem("openrouter-api-key", openRouterApiKey);
+    } else {
+      localStorage.removeItem("openrouter-api-key");
+    }
+  }, [openRouterApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("openrouter-model", openRouterModel);
+  }, [openRouterModel]);
 
   // Initialize audio element when audio is generated
   useEffect(() => {
@@ -956,6 +1476,40 @@ ${srtContent}`;
       });
   };
 
+  const handleProcessedAudio = (
+    processedAudioUrl: string,
+    settings: {
+      bands: Array<{ frequency: number; gain: number; label: string }>;
+      selectedPreset: string;
+      pitchShift: number;
+      usePronounced: boolean;
+      reverbEnabled: boolean;
+      reverbAmount: number;
+    }
+  ) => {
+    setProcessedAudio(processedAudioUrl);
+    setEqSettings(settings);
+    setGeneratedAudio(processedAudioUrl); // Replace the original audio with processed version
+    setShowEqualizer(false); // Close the equalizer dialog
+  };
+
+  const cleanTranscript = (rawTranscript: string): string => {
+    return (
+      rawTranscript
+        // Remove timestamps (e.g., 0:00, 0:04, etc.)
+        .replace(/\d+:\d+\s*/g, "")
+        // Remove music markers
+        .replace(/\[music\]/gi, "")
+        // Remove extra whitespace and normalize line breaks
+        .replace(/\s+/g, " ")
+        .trim()
+        // Split into lines and filter out empty lines
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .join("\n")
+    );
+  };
+
   return (
     <div className="min-h-screen bg-gradient-bg p-6">
       <div className="w-full space-y-8">
@@ -965,28 +1519,9 @@ ${srtContent}`;
           <div className="lg:col-span-2 space-y-6">
             <Card className="bg-gradient-card shadow-card border-0">
               <CardHeader>
-                <CardTitle className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Volume2 className="w-5 h-5 text-primary" />
-                    Script
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Label
-                      htmlFor="a4fApiKey"
-                      className="text-sm font-semibold flex items-center gap-1"
-                    >
-                      <Key className="w-4 h-4 text-primary" />
-                      A4F API Key
-                    </Label>
-                    <Input
-                      id="a4fApiKey"
-                      type="password"
-                      placeholder="Enter your A4F API key..."
-                      value={a4fApiKey}
-                      onChange={(e) => setA4fApiKey(e.target.value)}
-                      className="w-64"
-                    />
-                  </div>
+                <CardTitle className="flex items-center gap-2">
+                  <Volume2 className="w-5 h-5 text-primary" />
+                  Script
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1067,6 +1602,19 @@ ${srtContent}`;
                             }}
                           />
                         </div>
+                      </div>
+
+                      {/* Audio Effects Button */}
+                      <div className="flex justify-center pt-2">
+                        <Button
+                          onClick={() => setShowEqualizer(true)}
+                          variant="outline"
+                          size="sm"
+                          className="bg-gradient-primary text-white hover:bg-gradient-primary hover:text-white hover:shadow-glow"
+                        >
+                          <Settings className="w-4 h-4 mr-1" />
+                          Audio Effects
+                        </Button>
                       </div>
                     </div>
                   </div>
@@ -1373,37 +1921,144 @@ ${srtContent}`;
         </div>
       </div>
 
-      {/* Backup Button - Bottom Left */}
+      {/* API Button - Bottom Left */}
       <Button
         onClick={() => setShowSampleDialog(true)}
         size="sm"
         variant="outline"
         className="fixed bottom-4 left-4 z-50 flex items-center gap-0.5 bg-background/90 backdrop-blur-sm border-primary/20 hover:border-primary/40 shadow-lg"
       >
-        <FileText className="w-4 h-4" />
-        Backup
+        <Key className="w-4 h-4" />
+        API
       </Button>
 
-      {/* Sample Affirmations Dialog */}
+      {/* API Settings Dialog */}
       <Dialog open={showSampleDialog} onOpenChange={setShowSampleDialog}>
         <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <FileText className="w-5 h-5 text-primary" />
-              Sample Affirmations Backup
+              <Key className="w-5 h-5 text-primary" />
+              API Settings
             </DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Use these sample affirmations to supplement your generated script
-              or as inspiration.
-            </p>
-            <div className="relative">
-              <Textarea
-                value={sampleAffirmations}
-                readOnly
-                className="min-h-[300px] resize-none text-sm no-focus-outline"
-              />
+          <div className="flex-1 overflow-auto space-y-6 p-4">
+            <div className="space-y-4">
+              <div>
+                <Label>Provider Type</Label>
+                <div className="flex space-x-4">
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      id="a4f"
+                      name="providerType"
+                      value="a4f"
+                      checked={selectedProviderType === "a4f"}
+                      onChange={(e) => setSelectedProviderType(e.target.value)}
+                      className="w-4 h-4"
+                    />
+                    <Label htmlFor="a4f" className="text-sm">
+                      A4F
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="radio"
+                      id="openrouter"
+                      name="providerType"
+                      value="openrouter"
+                      checked={selectedProviderType === "openrouter"}
+                      onChange={(e) => setSelectedProviderType(e.target.value)}
+                      className="w-4 h-4"
+                    />
+                    <Label htmlFor="openrouter" className="text-sm">
+                      OpenRouter
+                    </Label>
+                  </div>
+                </div>
+              </div>
+
+              {selectedProviderType === "a4f" ? (
+                <>
+                  <div>
+                    <Label htmlFor="a4fApiKey">A4F API Key</Label>
+                    <Input
+                      id="a4fApiKey"
+                      type="password"
+                      placeholder="Enter your A4F API key..."
+                      value={a4fApiKey}
+                      onChange={(e) => setA4fApiKey(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="provider">Provider URL</Label>
+                    <Input
+                      id="provider"
+                      type="text"
+                      placeholder="https://api.a4f.co/v1"
+                      value={selectedProvider}
+                      onChange={(e) => setSelectedProvider(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="model">Model</Label>
+                    <Input
+                      id="model"
+                      type="text"
+                      placeholder="provider-6/gpt-4.1"
+                      value={selectedModel}
+                      onChange={(e) => setSelectedModel(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div>
+                    <Label htmlFor="openRouterApiKey">OpenRouter API Key</Label>
+                    <Input
+                      id="openRouterApiKey"
+                      type="password"
+                      placeholder="Enter your OpenRouter API key..."
+                      value={openRouterApiKey}
+                      onChange={(e) => setOpenRouterApiKey(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="openRouterModel">Model</Label>
+                    <Input
+                      id="openRouterModel"
+                      type="text"
+                      placeholder="openai/gpt-4o"
+                      value={openRouterModel}
+                      onChange={(e) => setOpenRouterModel(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+                </>
+              )}
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium">Sample Affirmations</h3>
+              <p className="text-sm text-muted-foreground">
+                Use these sample affirmations to supplement your generated
+                script or as inspiration.
+              </p>
+              <div className="relative">
+                <Textarea
+                  value={sampleAffirmations}
+                  readOnly
+                  className="min-h-[200px] resize-none text-sm no-focus-outline"
+                />
+              </div>
             </div>
           </div>
         </DialogContent>
@@ -1425,20 +2080,8 @@ ${srtContent}`;
                 <span>Ivory Affirmation</span>
               </div>
               <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + Shift + A</span>
-                <span>Astral Embrace</span>
-              </div>
-              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + E</span>
-                <span>Nightly Science</span>
-              </div>
-              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
                 <span className="font-mono">Ctrl + G</span>
-                <span>Starlit Science</span>
-              </div>
-              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + Shift + S</span>
-                <span>Spiritual Sattva</span>
+                <span>Gradient Voice (with auto EQ)</span>
               </div>
               <div className="flex justify-between items-center p-2 rounded bg-muted/30">
                 <span className="font-mono">Ctrl + M</span>
@@ -1451,40 +2094,113 @@ ${srtContent}`;
 
       {/* Script Generation Dialog */}
       <Dialog open={showScriptDialog} onOpenChange={setShowScriptDialog}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
               <Bot className="w-5 h-5 text-primary" />
               Generate Script
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4">
+          <div className="flex-1 overflow-auto space-y-4 p-4">
+            <div>
+              <Label>Script Type</Label>
+              <div className="flex space-x-4 mt-2">
+                <Button
+                  variant={scriptType === "affirmation" ? "default" : "outline"}
+                  onClick={() => setScriptType("affirmation")}
+                  className={`flex-1 ${
+                    scriptType === "affirmation"
+                      ? "bg-gradient-primary text-white"
+                      : ""
+                  }`}
+                >
+                  Affirmation Script
+                </Button>
+                <Button
+                  variant={scriptType === "meditation" ? "default" : "outline"}
+                  onClick={() => setScriptType("meditation")}
+                  className={`flex-1 ${
+                    scriptType === "meditation"
+                      ? "bg-gradient-primary text-white"
+                      : ""
+                  }`}
+                >
+                  Meditation Script
+                </Button>
+              </div>
+            </div>
             <div>
               <Label htmlFor="scriptTitle">Script Title</Label>
               <Input
                 id="scriptTitle"
                 type="text"
-                placeholder="e.g., 'Daily Affirmations for Success'"
+                placeholder={
+                  scriptType === "affirmation"
+                    ? "e.g., 'Daily Affirmations for Success'"
+                    : "e.g., 'Guided Meditation for Peace'"
+                }
                 value={scriptTitle}
                 onChange={(e) => setScriptTitle(e.target.value)}
               />
             </div>
             <div>
-              <Label htmlFor="scriptDate">Date (for context)</Label>
+              <Label htmlFor="scriptDate">Date (optional, for context)</Label>
               <Input
                 id="scriptDate"
                 type="text"
-                placeholder="e.g., 'July 2025'"
+                placeholder="e.g., 'July 2025' (optional)"
                 value={scriptDate}
                 onChange={(e) => setScriptDate(e.target.value)}
               />
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <Label>Transcript (Optional)</Label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowTranscriptDialog(true)}
+                  className="text-xs"
+                >
+                  {transcript ? "Edit Transcript" : "Add Transcript"}
+                </Button>
+              </div>
+              {transcript && (
+                <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded">
+                  Transcript added ({transcript.split("\n").length} lines)
+                </div>
+              )}
+            </div>
+            <div>
+              <Label htmlFor="customPrompt">Custom Prompt (Optional)</Label>
+              <Textarea
+                id="customPrompt"
+                placeholder={
+                  scriptType === "affirmation"
+                    ? "Leave empty to use default affirmation prompt. You can use ${title}, ${date}, and ${transcript} placeholders."
+                    : "Leave empty to use default meditation prompt. You can use ${title}, ${date}, and ${transcript} placeholders."
+                }
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                className="min-h-[100px] resize-none text-sm"
+              />
+              <div className="text-xs text-muted-foreground mt-1">
+                Available placeholders: {"${title}"}, {"${date}"},{" "}
+                {"${transcript}"}
+              </div>
             </div>
             <Button
               onClick={handleScriptSubmit}
               disabled={isGeneratingScript}
               className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-500"
             >
-              {isGeneratingScript ? "Generating Script..." : "Generate Script"}
+              {isGeneratingScript
+                ? `Generating ${
+                    scriptType === "affirmation" ? "Affirmation" : "Meditation"
+                  } Script...`
+                : `Generate ${
+                    scriptType === "affirmation" ? "Affirmation" : "Meditation"
+                  } Script`}
             </Button>
           </div>
         </DialogContent>
@@ -1526,6 +2242,78 @@ ${srtContent}`;
                 </div>
               </div>
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Audio Equalizer Modal */}
+      <Dialog open={showEqualizer} onOpenChange={setShowEqualizer}>
+        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Settings className="w-5 h-5 text-primary" />
+              Audio Effects & Equalizer
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto p-4">
+            {generatedAudio && (
+              <AudioEqualizer
+                audioUrl={generatedAudio}
+                onProcessedAudio={handleProcessedAudio}
+                savedSettings={eqSettings}
+              />
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transcript Dialog */}
+      <Dialog
+        open={showTranscriptDialog}
+        onOpenChange={setShowTranscriptDialog}
+      >
+        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5 text-primary" />
+              Add/Edit Transcript
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto p-4 space-y-4">
+            <div>
+              <Label htmlFor="transcriptInput">Raw Transcript</Label>
+              <Textarea
+                id="transcriptInput"
+                placeholder="Paste your transcript here with timestamps and music markers. They will be automatically cleaned."
+                value={transcript}
+                onChange={(e) => setTranscript(e.target.value)}
+                className="min-h-[300px] resize-none text-sm"
+              />
+            </div>
+            {transcript && (
+              <div>
+                <Label>Cleaned Transcript Preview</Label>
+                <div className="bg-muted/30 p-3 rounded text-sm max-h-[200px] overflow-auto">
+                  <pre className="whitespace-pre-wrap">
+                    {cleanTranscript(transcript)}
+                  </pre>
+                </div>
+              </div>
+            )}
+            <div className="flex justify-end space-x-2">
+              <Button
+                variant="outline"
+                onClick={() => setShowTranscriptDialog(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => setShowTranscriptDialog(false)}
+                className="bg-gradient-primary hover:shadow-glow"
+              >
+                Save Transcript
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

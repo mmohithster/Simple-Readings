@@ -246,7 +246,7 @@ Use clear, single-line affirmations like in your reference.${
         // Add transcript reference if provided
         if (transcript.trim()) {
           const cleanedTranscript = cleanTranscript(transcript);
-          finalPrompt += `\n\nReference transcript for context and style:\n${cleanedTranscript}`;
+          finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
         }
 
         completion = await a4fClient.chat.completions.create({
@@ -256,7 +256,7 @@ Use clear, single-line affirmations like in your reference.${
           max_tokens: 4000,
         });
       } else {
-        // OpenRouter API call with retry logic
+        // OpenRouter API call using OpenAI SDK (like your working app)
         // Use custom prompt if provided, otherwise use default based on script type
         let prompt = customPrompt.trim();
 
@@ -284,45 +284,31 @@ Use clear, single-line affirmations like in your reference.${
         // Add transcript reference if provided
         if (transcript.trim()) {
           const cleanedTranscript = cleanTranscript(transcript);
-          finalPrompt += `\n\nReference transcript for context and style:\n${cleanedTranscript}`;
+          finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
         }
 
         const apiCall = async () => {
-          const response = await fetch(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${openRouterApiKey}`,
-                "HTTP-Referer": window.location.origin,
-                "X-Title": "Affirmation Audio Weaver",
-                "Content-Type": "application/json",
+          const openRouterClient = new OpenAI({
+            baseURL: "https://openrouter.ai/api/v1",
+            apiKey: openRouterApiKey,
+            defaultHeaders: {
+              "HTTP-Referer": window.location.origin,
+              "X-Title": "Affirmation Audio Weaver",
+            },
+            dangerouslyAllowBrowser: true,
+          });
+
+          return await openRouterClient.chat.completions.create({
+            model: openRouterModel,
+            messages: [
+              {
+                role: "user",
+                content: finalPrompt,
               },
-              body: JSON.stringify({
-                model: openRouterModel,
-                messages: [
-                  {
-                    role: "user",
-                    content: finalPrompt,
-                  },
-                ],
-                temperature: 0.7,
-                max_tokens: 4000,
-              }),
-            }
-          );
-
-          if (!response.ok) {
-            if (response.status === 429) {
-              throw new Error("429");
-            } else {
-              throw new Error(
-                `OpenRouter API error: ${response.status} ${response.statusText}`
-              );
-            }
-          }
-
-          return await response.json();
+            ],
+            temperature: 0.7,
+            max_tokens: 4000,
+          });
         };
 
         completion = await retryOpenRouterCall(apiCall);
@@ -465,7 +451,7 @@ ${srtContent}`;
           max_tokens: 500,
         });
       } else {
-        // OpenRouter API call for description with retry logic
+        // OpenRouter API call for description using OpenAI SDK
         const srtContent = affirmationTimings
           .map((timing) => timing.text)
           .join("\n");
@@ -476,41 +462,27 @@ SRT Content:
 ${srtContent}`;
 
         const apiCall = async () => {
-          const response = await fetch(
-            "https://openrouter.ai/api/v1/chat/completions",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${openRouterApiKey}`,
-                "HTTP-Referer": window.location.origin,
-                "X-Title": "Affirmation Audio Weaver",
-                "Content-Type": "application/json",
+          const openRouterClient = new OpenAI({
+            baseURL: "https://openrouter.ai/api/v1",
+            apiKey: openRouterApiKey,
+            defaultHeaders: {
+              "HTTP-Referer": window.location.origin,
+              "X-Title": "Affirmation Audio Weaver",
+            },
+            dangerouslyAllowBrowser: true,
+          });
+
+          return await openRouterClient.chat.completions.create({
+            model: openRouterModel,
+            messages: [
+              {
+                role: "user",
+                content: prompt,
               },
-              body: JSON.stringify({
-                model: openRouterModel,
-                messages: [
-                  {
-                    role: "user",
-                    content: prompt,
-                  },
-                ],
-                temperature: 0.7,
-                max_tokens: 500,
-              }),
-            }
-          );
-
-          if (!response.ok) {
-            if (response.status === 429) {
-              throw new Error("429");
-            } else {
-              throw new Error(
-                `OpenRouter API error: ${response.status} ${response.statusText}`
-              );
-            }
-          }
-
-          return await response.json();
+            ],
+            temperature: 0.7,
+            max_tokens: 500,
+          });
         };
 
         completion = await retryOpenRouterCall(apiCall);
@@ -1259,7 +1231,7 @@ ${srtContent}`;
           event.preventDefault();
         } else if (event.key.toLowerCase() === "g") {
           newVoice = "af_v0nicole(3)+am_v0gurney(2)+am_echo(5)";
-          shortcutName = "Gradient Voice";
+          shortcutName = "Grounded Spirit Meditation";
           newSpeed = 0.8;
           newSilenceGap = 1.5;
           autoApplyEQ = true;
@@ -1500,14 +1472,55 @@ ${srtContent}`;
         .replace(/\d+:\d+\s*/g, "")
         // Remove music markers
         .replace(/\[music\]/gi, "")
-        // Remove extra whitespace and normalize line breaks
-        .replace(/\s+/g, " ")
+        // Remove narrator markers
+        .replace(/\[narrator\]/gi, "")
+        // Remove speaker indicators
+        .replace(/^[A-Za-z]+:\s*/gm, "")
+        // Handle pause indicators and convert them to line breaks
+        .replace(/(\.{3,}|…)/g, "\n") // Convert ellipsis to line breaks for pauses
+        .replace(/(\s*[.!?]\s*)(?=[A-Z])/g, "$1\n") // Add line breaks after sentences when followed by capital letter
+        // Handle natural pause indicators
+        .replace(/(\s*,\s*)(?=[A-Z][a-z])/g, "$1\n") // Add line breaks after commas when followed by capital letter
+        // Remove extra whitespace but preserve intentional line breaks
+        .replace(/[ \t]+/g, " ")
         .trim()
         // Split into lines and filter out empty lines
         .split("\n")
-        .filter((line) => line.trim().length > 0)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        // Ensure each line is a complete thought or affirmation
+        .map((line) => {
+          // If line ends with punctuation, keep it as is
+          if (/[.!?]$/.test(line)) {
+            return line;
+          }
+          // If line doesn't end with punctuation and is a complete sentence, add period
+          if (/^[A-Z].*[a-z]/.test(line) && !/[.!?]$/.test(line)) {
+            return line + ".";
+          }
+          return line;
+        })
         .join("\n")
     );
+  };
+
+  // Helper function to detect content type and provide formatting guidance
+  const getTranscriptFormattingGuidance = (
+    scriptType: "affirmation" | "meditation"
+  ): string => {
+    if (scriptType === "affirmation") {
+      return `For affirmations, format each affirmation as a separate line with natural pauses:
+• Each line should be a complete, positive statement
+• Use ellipsis (...) to indicate natural breathing pauses
+• Keep each affirmation concise and impactful
+• Example: "I am worthy of love and respect... I choose to be confident... My mind is clear and focused"`;
+    } else {
+      return `For meditation scripts, format with natural flow and pauses:
+• Use ellipsis (...) for breathing pauses
+• Break long sentences at natural pause points
+• Include gentle transitions between thoughts
+• Example: "Take a deep breath... Feel the peace within you... Let go of all tension... You are safe and supported"`;
+    }
   };
 
   return (
@@ -2282,9 +2295,30 @@ ${srtContent}`;
           <div className="flex-1 overflow-auto p-4 space-y-4">
             <div>
               <Label htmlFor="transcriptInput">Raw Transcript</Label>
+              <div className="mb-2 p-3 bg-muted/30 rounded text-xs">
+                <strong>Formatting Guidance:</strong>
+                <div className="mt-1 whitespace-pre-line">
+                  {getTranscriptFormattingGuidance(scriptType)}
+                </div>
+              </div>
               <Textarea
                 id="transcriptInput"
-                placeholder="Paste your transcript here with timestamps and music markers. They will be automatically cleaned."
+                placeholder={`Paste your transcript here. The system will automatically:
+• Remove timestamps and music markers
+• Convert ellipsis (...) to natural pauses
+• Break long sentences into individual ${
+                  scriptType === "affirmation"
+                    ? "affirmations"
+                    : "meditation segments"
+                }
+• Add proper punctuation where needed
+
+Example format:
+${
+  scriptType === "affirmation"
+    ? '"I am worthy of love and respect... I choose to be confident in all situations. My mind is clear and focused... I attract abundance effortlessly."'
+    : '"Take a deep breath... Feel the peace within you... Let go of all tension... You are safe and supported... Breathe in calmness... Breathe out worry."'
+}`}
                 value={transcript}
                 onChange={(e) => setTranscript(e.target.value)}
                 className="min-h-[300px] resize-none text-sm"

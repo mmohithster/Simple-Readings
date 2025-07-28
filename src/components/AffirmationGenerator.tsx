@@ -224,13 +224,13 @@ I trust the process of life and know everything unfolds perfectly.`;
         if (!prompt) {
           if (scriptType === "affirmation") {
             prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
-Use clear, single-line affirmations like in your reference.${
+Use clear, single-line affirmations.${
               date
                 ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
                 : ""
-            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! Use ${transcript} as inspiration and structure if provided, it will be the reference. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           } else {
-            prompt = `Write a (1500-1800) words long script similar to, and inspired from ${transcript}. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+            prompt = `Write a (1500-1800) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           }
         }
 
@@ -254,6 +254,7 @@ Use clear, single-line affirmations like in your reference.${
           messages: [{ role: "user", content: finalPrompt }],
           temperature: 0.7,
           max_tokens: 4000,
+          stream: true,
         });
       } else {
         // OpenRouter API call using OpenAI SDK (like your working app)
@@ -266,9 +267,9 @@ Use clear, single-line affirmations like in your reference.${
               date
                 ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
                 : ""
-            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! Use ${transcript} as inspiration and structure if provided, it will be the reference. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           } else {
-            prompt = `Write a (1500-1800) words long script similar to, and inspired from ${transcript}. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+            prompt = `Write a (1500-1800) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           }
         }
 
@@ -284,7 +285,7 @@ Use clear, single-line affirmations like in your reference.${
         // Add transcript reference if provided
         if (transcript.trim()) {
           const cleanedTranscript = cleanTranscript(transcript);
-          finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
+          finalPrompt += `\n\nReference transcript for context only (use as inspiration, but create original content):\n${cleanedTranscript}`;
         }
 
         const apiCall = async () => {
@@ -308,13 +309,31 @@ Use clear, single-line affirmations like in your reference.${
             ],
             temperature: 0.7,
             max_tokens: 4000,
+            stream: true,
           });
         };
 
         completion = await retryOpenRouterCall(apiCall);
       }
 
-      const generatedScript = completion.choices[0].message.content;
+      // Handle streaming response
+      let generatedScript = "";
+
+      if (selectedProviderType === "a4f") {
+        // Handle A4F streaming
+        for await (const chunk of completion) {
+          const content = chunk.choices[0]?.delta?.content || "";
+          generatedScript += content;
+          setAffirmations(generatedScript);
+        }
+      } else {
+        // Handle OpenRouter streaming
+        for await (const chunk of completion) {
+          const content = chunk.choices[0]?.delta?.content || "";
+          generatedScript += content;
+          setAffirmations(generatedScript);
+        }
+      }
 
       if (generatedScript) {
         // Remove numbering from affirmations (e.g., "1. ", "1) ", "1: ", "1 - ")
@@ -328,7 +347,7 @@ Use clear, single-line affirmations like in your reference.${
         setSavedScriptTitle(title); // Save the title for description generation
         toast({
           title: "Script Generated!",
-          description: `Successfully generated affirmations for "${title}"`,
+          description: `Successfully generated ${scriptType} script for "${title}"`,
         });
       }
     } catch (error) {
@@ -380,6 +399,13 @@ Use clear, single-line affirmations like in your reference.${
       });
       return;
     }
+
+    // Close the dialog immediately
+    setShowScriptDialog(false);
+
+    // Show streaming in the script input
+    setAffirmations("Generating script...");
+
     generateScript(scriptTitle, scriptDate);
   };
 
@@ -449,6 +475,7 @@ ${srtContent}`;
           messages: [{ role: "user", content: prompt }],
           temperature: 0.7,
           max_tokens: 500,
+          stream: true,
         });
       } else {
         // OpenRouter API call for description using OpenAI SDK
@@ -482,13 +509,29 @@ ${srtContent}`;
             ],
             temperature: 0.7,
             max_tokens: 500,
+            stream: true,
           });
         };
 
         completion = await retryOpenRouterCall(apiCall);
       }
 
-      const generatedDescription = completion.choices[0].message.content;
+      // Handle streaming response for description
+      let generatedDescription = "";
+
+      if (selectedProviderType === "a4f") {
+        // Handle A4F streaming
+        for await (const chunk of completion) {
+          const content = chunk.choices[0]?.delta?.content || "";
+          generatedDescription += content;
+        }
+      } else {
+        // Handle OpenRouter streaming
+        for await (const chunk of completion) {
+          const content = chunk.choices[0]?.delta?.content || "";
+          generatedDescription += content;
+        }
+      }
 
       if (generatedDescription) {
         // Download as .txt file
@@ -1479,8 +1522,8 @@ ${srtContent}`;
         // Handle pause indicators and convert them to line breaks
         .replace(/(\.{3,}|…)/g, "\n") // Convert ellipsis to line breaks for pauses
         .replace(/(\s*[.!?]\s*)(?=[A-Z])/g, "$1\n") // Add line breaks after sentences when followed by capital letter
-        // Handle natural pause indicators
-        .replace(/(\s*,\s*)(?=[A-Z][a-z])/g, "$1\n") // Add line breaks after commas when followed by capital letter
+        // Handle natural pause indicators - preserve commas but add line breaks for major pauses
+        .replace(/(\s*,\s*)(?=[A-Z][a-z])/g, ",\n") // Add line breaks after commas when followed by capital letter, but keep the comma
         // Remove extra whitespace but preserve intentional line breaks
         .replace(/[ \t]+/g, " ")
         .trim()
@@ -1502,25 +1545,6 @@ ${srtContent}`;
         })
         .join("\n")
     );
-  };
-
-  // Helper function to detect content type and provide formatting guidance
-  const getTranscriptFormattingGuidance = (
-    scriptType: "affirmation" | "meditation"
-  ): string => {
-    if (scriptType === "affirmation") {
-      return `For affirmations, format each affirmation as a separate line with natural pauses:
-• Each line should be a complete, positive statement
-• Use ellipsis (...) to indicate natural breathing pauses
-• Keep each affirmation concise and impactful
-• Example: "I am worthy of love and respect... I choose to be confident... My mind is clear and focused"`;
-    } else {
-      return `For meditation scripts, format with natural flow and pauses:
-• Use ellipsis (...) for breathing pauses
-• Break long sentences at natural pause points
-• Include gentle transitions between thoughts
-• Example: "Take a deep breath... Feel the peace within you... Let go of all tension... You are safe and supported"`;
-    }
   };
 
   return (
@@ -2294,46 +2318,30 @@ ${srtContent}`;
           </DialogHeader>
           <div className="flex-1 overflow-auto p-4 space-y-4">
             <div>
-              <Label htmlFor="transcriptInput">Raw Transcript</Label>
-              <div className="mb-2 p-3 bg-muted/30 rounded text-xs">
-                <strong>Formatting Guidance:</strong>
-                <div className="mt-1 whitespace-pre-line">
-                  {getTranscriptFormattingGuidance(scriptType)}
-                </div>
-              </div>
+              <Label htmlFor="transcriptInput">Transcript</Label>
               <Textarea
                 id="transcriptInput"
-                placeholder={`Paste your transcript here. The system will automatically:
-• Remove timestamps and music markers
-• Convert ellipsis (...) to natural pauses
-• Break long sentences into individual ${
+                placeholder={`Paste your raw transcript here. It will be automatically cleaned as you type.
+
+Automatic cleaning includes:
+• Removing timestamps and music markers
+• Converting ellipsis (...) to natural pauses
+• Breaking sentences into individual ${
                   scriptType === "affirmation"
                     ? "affirmations"
                     : "meditation segments"
                 }
-• Add proper punctuation where needed
-
-Example format:
-${
-  scriptType === "affirmation"
-    ? '"I am worthy of love and respect... I choose to be confident in all situations. My mind is clear and focused... I attract abundance effortlessly."'
-    : '"Take a deep breath... Feel the peace within you... Let go of all tension... You are safe and supported... Breathe in calmness... Breathe out worry."'
-}`}
+• Adding proper punctuation where needed`}
                 value={transcript}
-                onChange={(e) => setTranscript(e.target.value)}
-                className="min-h-[300px] resize-none text-sm"
+                onChange={(e) => {
+                  const rawValue = e.target.value;
+                  // Auto-clean the transcript as user types
+                  const cleaned = cleanTranscript(rawValue);
+                  setTranscript(cleaned);
+                }}
+                className="min-h-[400px] resize-none text-sm"
               />
             </div>
-            {transcript && (
-              <div>
-                <Label>Cleaned Transcript Preview</Label>
-                <div className="bg-muted/30 p-3 rounded text-sm max-h-[200px] overflow-auto">
-                  <pre className="whitespace-pre-wrap">
-                    {cleanTranscript(transcript)}
-                  </pre>
-                </div>
-              </div>
-            )}
             <div className="flex justify-end space-x-2">
               <Button
                 variant="outline"

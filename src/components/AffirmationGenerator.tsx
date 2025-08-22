@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import OpenAI from "openai";
+import Anthropic from "@anthropic-ai/sdk";
 import { AudioEqualizer } from "@/components/AudioEqualizer";
 
 interface VoiceSettings {
@@ -54,6 +55,18 @@ const AffirmationGenerator = () => {
   });
   const [openRouterModel, setOpenRouterModel] = useState(() => {
     return localStorage.getItem("openrouter-model") || "openai/gpt-4o";
+  });
+  const [anthropicApiKey, setAnthropicApiKey] = useState(() => {
+    return localStorage.getItem("anthropic-api-key") || "";
+  });
+  const [anthropicModel, setAnthropicModel] = useState(() => {
+    const savedModel = localStorage.getItem("anthropic-model");
+    // Migrate from old model names to new one
+    if (savedModel && savedModel.includes("claude-3")) {
+      localStorage.setItem("anthropic-model", "claude-sonnet-4-20250514");
+      return "claude-sonnet-4-20250514";
+    }
+    return savedModel || "claude-sonnet-4-20250514";
   });
   const [lastApiCall, setLastApiCall] = useState(0);
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
@@ -188,8 +201,17 @@ I trust the process of life and know everything unfolds perfectly.`;
 
   const generateScript = async (title: string, date: string) => {
     const apiKey =
-      selectedProviderType === "a4f" ? a4fApiKey : openRouterApiKey;
-    const apiKeyName = selectedProviderType === "a4f" ? "A4F" : "OpenRouter";
+      selectedProviderType === "a4f"
+        ? a4fApiKey
+        : selectedProviderType === "anthropic"
+        ? anthropicApiKey
+        : openRouterApiKey;
+    const apiKeyName =
+      selectedProviderType === "a4f"
+        ? "A4F"
+        : selectedProviderType === "anthropic"
+        ? "Anthropic"
+        : "OpenRouter";
 
     if (!apiKey.trim()) {
       toast({
@@ -204,6 +226,12 @@ I trust the process of life and know everything unfolds perfectly.`;
 
     // Check rate limit for OpenRouter
     if (selectedProviderType === "openrouter" && !checkRateLimit()) {
+      setIsGeneratingScript(false);
+      return;
+    }
+
+    // Check rate limit for Anthropic (same as OpenRouter)
+    if (selectedProviderType === "anthropic" && !checkRateLimit()) {
       setIsGeneratingScript(false);
       return;
     }
@@ -254,6 +282,49 @@ Use clear, single-line affirmations.${
           messages: [{ role: "user", content: finalPrompt }],
           temperature: 0.7,
           max_tokens: 4000,
+          stream: true,
+        });
+      } else if (selectedProviderType === "anthropic") {
+        const anthropicClient = new Anthropic({
+          apiKey: anthropicApiKey,
+          dangerouslyAllowBrowser: true,
+        });
+
+        // Use custom prompt if provided, otherwise use default based on script type
+        let prompt = customPrompt.trim();
+
+        if (!prompt) {
+          if (scriptType === "affirmation") {
+            prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+Use clear, single-line affirmations.${
+              date
+                ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
+                : ""
+            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+          } else {
+            prompt = `Write a (1500-1800) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+          }
+        }
+
+        // Replace placeholders in the prompt
+        let finalPrompt = prompt
+          .replace(/\${title}/g, title)
+          .replace(/\${date}/g, date)
+          .replace(
+            /\${transcript}/g,
+            transcript ? cleanTranscript(transcript) : ""
+          );
+
+        // Add transcript reference if provided
+        if (transcript.trim()) {
+          const cleanedTranscript = cleanTranscript(transcript);
+          finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
+        }
+
+        completion = await anthropicClient.messages.create({
+          model: anthropicModel,
+          max_tokens: 4000,
+          messages: [{ role: "user", content: finalPrompt }],
           stream: true,
         });
       } else {
@@ -326,6 +397,18 @@ Use clear, single-line affirmations.${
           generatedScript += content;
           setAffirmations(generatedScript);
         }
+      } else if (selectedProviderType === "anthropic") {
+        // Handle Anthropic streaming
+        for await (const chunk of completion) {
+          if (
+            chunk.type === "content_block_delta" &&
+            chunk.delta.type === "text_delta"
+          ) {
+            const content = chunk.delta.text || "";
+            generatedScript += content;
+            setAffirmations(generatedScript);
+          }
+        }
       } else {
         // Handle OpenRouter streaming
         for await (const chunk of completion) {
@@ -366,8 +449,17 @@ Use clear, single-line affirmations.${
 
   const handleGenerateScript = () => {
     const apiKey =
-      selectedProviderType === "a4f" ? a4fApiKey : openRouterApiKey;
-    const apiKeyName = selectedProviderType === "a4f" ? "A4F" : "OpenRouter";
+      selectedProviderType === "a4f"
+        ? a4fApiKey
+        : selectedProviderType === "anthropic"
+        ? anthropicApiKey
+        : openRouterApiKey;
+    const apiKeyName =
+      selectedProviderType === "a4f"
+        ? "A4F"
+        : selectedProviderType === "anthropic"
+        ? "Anthropic"
+        : "OpenRouter";
 
     if (!apiKey.trim()) {
       toast({
@@ -411,8 +503,17 @@ Use clear, single-line affirmations.${
 
   const generateDescription = async () => {
     const apiKey =
-      selectedProviderType === "a4f" ? a4fApiKey : openRouterApiKey;
-    const apiKeyName = selectedProviderType === "a4f" ? "A4F" : "OpenRouter";
+      selectedProviderType === "a4f"
+        ? a4fApiKey
+        : selectedProviderType === "anthropic"
+        ? anthropicApiKey
+        : openRouterApiKey;
+    const apiKeyName =
+      selectedProviderType === "a4f"
+        ? "A4F"
+        : selectedProviderType === "anthropic"
+        ? "Anthropic"
+        : "OpenRouter";
 
     if (!apiKey.trim()) {
       toast({
@@ -450,6 +551,12 @@ Use clear, single-line affirmations.${
       return;
     }
 
+    // Check rate limit for Anthropic (same as OpenRouter)
+    if (selectedProviderType === "anthropic" && !checkRateLimit()) {
+      setIsGeneratingDescription(false);
+      return;
+    }
+
     try {
       let completion;
 
@@ -475,6 +582,28 @@ ${srtContent}`;
           messages: [{ role: "user", content: prompt }],
           temperature: 0.7,
           max_tokens: 500,
+          stream: true,
+        });
+      } else if (selectedProviderType === "anthropic") {
+        const anthropicClient = new Anthropic({
+          apiKey: anthropicApiKey,
+          dangerouslyAllowBrowser: true,
+        });
+
+        // Create content from affirmations for the prompt
+        const srtContent = affirmationTimings
+          .map((timing) => timing.text)
+          .join("\n");
+
+        const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
+
+SRT Content:
+${srtContent}`;
+
+        completion = await anthropicClient.messages.create({
+          model: anthropicModel,
+          max_tokens: 500,
+          messages: [{ role: "user", content: prompt }],
           stream: true,
         });
       } else {
@@ -524,6 +653,17 @@ ${srtContent}`;
         for await (const chunk of completion) {
           const content = chunk.choices[0]?.delta?.content || "";
           generatedDescription += content;
+        }
+      } else if (selectedProviderType === "anthropic") {
+        // Handle Anthropic streaming
+        for await (const chunk of completion) {
+          if (
+            chunk.type === "content_block_delta" &&
+            chunk.delta.type === "text_delta"
+          ) {
+            const content = chunk.delta.text || "";
+            generatedDescription += content;
+          }
         }
       } else {
         // Handle OpenRouter streaming
@@ -1361,6 +1501,18 @@ ${srtContent}`;
     localStorage.setItem("openrouter-model", openRouterModel);
   }, [openRouterModel]);
 
+  useEffect(() => {
+    if (anthropicApiKey) {
+      localStorage.setItem("anthropic-api-key", anthropicApiKey);
+    } else {
+      localStorage.removeItem("anthropic-api-key");
+    }
+  }, [anthropicApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("anthropic-model", anthropicModel);
+  }, [anthropicModel]);
+
   // Initialize audio element when audio is generated
   useEffect(() => {
     if (generatedAudio) {
@@ -2000,6 +2152,20 @@ ${srtContent}`;
                   <div className="flex items-center space-x-2">
                     <input
                       type="radio"
+                      id="anthropic"
+                      name="providerType"
+                      value="anthropic"
+                      checked={selectedProviderType === "anthropic"}
+                      onChange={(e) => setSelectedProviderType(e.target.value)}
+                      className="w-4 h-4"
+                    />
+                    <Label htmlFor="anthropic" className="text-sm">
+                      Anthropic
+                    </Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <input
+                      type="radio"
                       id="openrouter"
                       name="providerType"
                       value="openrouter"
@@ -2048,6 +2214,32 @@ ${srtContent}`;
                       placeholder="provider-6/gpt-4.1"
                       value={selectedModel}
                       onChange={(e) => setSelectedModel(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+                </>
+              ) : selectedProviderType === "anthropic" ? (
+                <>
+                  <div>
+                    <Label htmlFor="anthropicApiKey">Anthropic API Key</Label>
+                    <Input
+                      id="anthropicApiKey"
+                      type="password"
+                      placeholder="Enter your Anthropic API key..."
+                      value={anthropicApiKey}
+                      onChange={(e) => setAnthropicApiKey(e.target.value)}
+                      className="w-full"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="anthropicModel">Model</Label>
+                    <Input
+                      id="anthropicModel"
+                      type="text"
+                      placeholder="claude-sonnet-4-20250514"
+                      value={anthropicModel}
+                      onChange={(e) => setAnthropicModel(e.target.value)}
                       className="w-full"
                     />
                   </div>

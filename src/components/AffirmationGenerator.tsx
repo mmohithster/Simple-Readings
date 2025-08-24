@@ -1086,13 +1086,15 @@ ${srtContent}`;
       setProgress(80);
       const combinedAudio = await combineAudioClips(audioClips, lines);
 
-      setProgress(100);
       const audioUrl = URL.createObjectURL(combinedAudio);
       setGeneratedAudio(audioUrl);
 
       // Auto-apply EQ if enabled OR if EQ settings exist (manual application)
       if ((autoApplyEQ || eqSettings) && eqSettings) {
         try {
+          // Set progress to 90% when starting EQ processing
+          setProgress(90);
+
           // Create a temporary AudioEqualizer instance to process the audio
           const processAudioWithEQ = async () => {
             const audioContext = new AudioContext();
@@ -1265,6 +1267,9 @@ ${srtContent}`;
             setProcessedAudio(processedUrl);
             setAutoApplyEQ(false); // Reset the flag
 
+            // Set progress to 100% when EQ processing is complete
+            setProgress(100);
+
             toast({
               title: "Auto EQ Applied!",
               description: `Applied ${eqSettings.selectedPreset} preset with ${
@@ -1275,7 +1280,8 @@ ${srtContent}`;
             });
           };
 
-          processAudioWithEQ();
+          // Wait for EQ processing to complete before continuing
+          await processAudioWithEQ();
         } catch (error) {
           console.error("Auto EQ processing failed:", error);
           toast({
@@ -1287,6 +1293,9 @@ ${srtContent}`;
           setAutoApplyEQ(false);
         }
       } else {
+        // Set progress to 100% for voices without auto EQ
+        setProgress(100);
+
         toast({
           title: "Generation Complete!",
           description: "Your affirmation audio is ready for download.",
@@ -1302,7 +1311,8 @@ ${srtContent}`;
       });
     } finally {
       setIsGenerating(false);
-      setProgress(0);
+      // Don't reset progress to 0 - keep it at 100% to show completion
+      // Progress will be reset to 0 when starting a new generation
     }
   };
 
@@ -1452,6 +1462,10 @@ ${srtContent}`;
               reverbAmount: 15,
             });
             setAutoApplyEQ(true);
+          } else {
+            // Reset EQ settings for non-auto-EQ voices
+            setEqSettings(null);
+            setAutoApplyEQ(false);
           }
 
           toast({
@@ -1886,7 +1900,9 @@ ${srtContent}`;
                     <p className="text-sm text-muted-foreground text-center">
                       {progress < 70
                         ? "Processing affirmations..."
-                        : "Combining audio clips..."}
+                        : progress < 90
+                        ? "Combining audio clips..."
+                        : "Applying audio effects..."}
                     </p>
                   </div>
                 )}

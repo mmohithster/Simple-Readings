@@ -1423,7 +1423,7 @@ ${srtContent}`;
           newSilenceGap = 6;
           event.preventDefault();
         } else if (event.key.toLowerCase() === "g") {
-          newVoice = "af_v0nicole(3)+am_v0gurney(2)+am_echo(5)";
+          newVoice = "bm_fable(7)+bm_george(2)+af_nicole(1)";
           shortcutName = "Grounded Spirit Meditation";
           newSpeed = 0.8;
           newSilenceGap = 1.5;

@@ -94,6 +94,9 @@ const AffirmationGenerator = () => {
   const [scriptType, setScriptType] = useState<"affirmation" | "meditation">(
     "affirmation"
   );
+  const [affirmationLength, setAffirmationLength] = useState<"long" | "short">(
+    "long"
+  );
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -251,7 +254,8 @@ I trust the process of life and know everything unfolds perfectly.`;
 
         if (!prompt) {
           if (scriptType === "affirmation") {
-            prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+            const affirmationCount = affirmationLength === "long" ? 130 : 15;
+            prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
 Use clear, single-line affirmations.${
               date
                 ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
@@ -295,14 +299,15 @@ Use clear, single-line affirmations.${
 
         if (!prompt) {
           if (scriptType === "affirmation") {
-            prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+            const affirmationCount = affirmationLength === "long" ? 130 : 15;
+            prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
 Use clear, single-line affirmations.${
               date
                 ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
                 : ""
             } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           } else {
-            prompt = `Write a (1500-1800) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+            prompt = `Write a (3500-4000) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           }
         }
 
@@ -334,7 +339,8 @@ Use clear, single-line affirmations.${
 
         if (!prompt) {
           if (scriptType === "affirmation") {
-            prompt = `I want you to write 130 Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations. Use clear, single-line affirmations.${
+            const affirmationCount = affirmationLength === "long" ? 130 : 15;
+            prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations. Use clear, single-line affirmations.${
               date
                 ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
                 : ""
@@ -980,7 +986,7 @@ ${srtContent}`;
         const startTime = currentTime;
         const endTime = currentTime + buffer.duration;
 
-        // Track timing for .srt generation
+        // Track timing for .srt generation (will adjust end times later)
         timings.push({
           text: affirmationLines[i].trim(),
           start: startTime,
@@ -1002,6 +1008,12 @@ ${srtContent}`;
           currentOffset += silenceSamples;
           currentTime += silenceGap;
         }
+      }
+
+      // Adjust caption end times to last until 1ms before the next caption starts
+      // This ensures no gap and no overlap between captions
+      for (let i = 0; i < timings.length - 1; i++) {
+        timings[i].end = timings[i + 1].start - 0.001;
       }
 
       // Store timings for .srt generation
@@ -2374,6 +2386,39 @@ ${srtContent}`;
                 </Button>
               </div>
             </div>
+            {scriptType === "affirmation" && (
+              <div>
+                <Label>Affirmation Length</Label>
+                <div className="flex space-x-4 mt-2">
+                  <Button
+                    variant={
+                      affirmationLength === "long" ? "default" : "outline"
+                    }
+                    onClick={() => setAffirmationLength("long")}
+                    className={`flex-1 ${
+                      affirmationLength === "long"
+                        ? "bg-gradient-primary text-white"
+                        : ""
+                    }`}
+                  >
+                    Long
+                  </Button>
+                  <Button
+                    variant={
+                      affirmationLength === "short" ? "default" : "outline"
+                    }
+                    onClick={() => setAffirmationLength("short")}
+                    className={`flex-1 ${
+                      affirmationLength === "short"
+                        ? "bg-gradient-primary text-white"
+                        : ""
+                    }`}
+                  >
+                    Short
+                  </Button>
+                </div>
+              </div>
+            )}
             <div>
               <Label htmlFor="scriptTitle">Script Title</Label>
               <Input

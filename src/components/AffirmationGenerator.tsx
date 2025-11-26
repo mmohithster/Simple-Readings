@@ -16,6 +16,8 @@ import {
   Copy,
   FileText,
   Settings,
+  Video,
+  Check,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -97,7 +99,26 @@ const AffirmationGenerator = () => {
   const [affirmationLength, setAffirmationLength] = useState<"long" | "short">(
     "long"
   );
+  const [scriptImage, setScriptImage] = useState<File | null>(null);
+  const [scriptBackgroundMusic, setScriptBackgroundMusic] =
+    useState<File | null>(null);
+  const [scriptVideoOverlay, setScriptVideoOverlay] = useState<File | null>(
+    null
+  );
+  const [scriptSubscribeVideo, setScriptSubscribeVideo] = useState<File | null>(
+    null
+  );
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+
+  // Render server states
+  const [renderServerUrl, setRenderServerUrl] = useState(() => {
+    return localStorage.getItem("render-server-url") || "http://localhost:8001";
+  });
+  const [isRendering, setIsRendering] = useState(false);
+  const [renderProgress, setRenderProgress] = useState(0);
+  const [renderJobId, setRenderJobId] = useState<string | null>(null);
+  const [renderedVideoUrl, setRenderedVideoUrl] = useState<string | null>(null);
+  const [renderLogs, setRenderLogs] = useState<string[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -305,7 +326,7 @@ Use clear, single-line affirmations.${
               date
                 ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
                 : ""
-            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. Do not write the Title at the top before affirmations start, No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           } else {
             prompt = `Write a (3500-4000) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
           }
@@ -505,6 +526,479 @@ Use clear, single-line affirmations.${
     setAffirmations("Generating script...");
 
     generateScript(scriptTitle, scriptDate);
+  };
+
+  const handleRenderVideo = async () => {
+    // Validate required files
+    if (!scriptBackgroundMusic) {
+      toast({
+        title: "Missing Background Music",
+        description: "Please add background music to render the video.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!generatedAudio) {
+      toast({
+        title: "Missing Voiceover",
+        description: "Please generate audio first before rendering.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!scriptImage) {
+      toast({
+        title: "Missing Image",
+        description: "Please add an image to render the video.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsRendering(true);
+    setRenderProgress(0);
+    setRenderLogs([]);
+
+    try {
+      // Get background music duration
+      const bgMusicDuration = await getAudioDuration(scriptBackgroundMusic);
+
+      // Convert generated audio URL to blob
+      const voiceoverResponse = await fetch(generatedAudio);
+      const voiceoverBlob = await voiceoverResponse.blob();
+      const voiceoverFile = new File([voiceoverBlob], "voiceover.mp3", {
+        type: "audio/mpeg",
+      });
+
+      // Get voiceover duration
+      const voiceoverDuration = await getAudioDuration(voiceoverFile);
+
+      // Find the best cut point if voiceover is longer than background music
+      const voiceoverNeedsTrim = voiceoverDuration > bgMusicDuration;
+      const effectiveDuration = voiceoverNeedsTrim
+        ? findBestCutPoint(bgMusicDuration)
+        : Math.min(voiceoverDuration, bgMusicDuration);
+
+      // Generate SRT file from affirmation timings (only up to effective duration)
+      const srtContent = generateSRTContent(
+        affirmationTimings,
+        effectiveDuration
+      );
+      const srtBlob = new Blob([srtContent], { type: "text/plain" });
+      const srtFile = new File([srtBlob], "subtitles.srt", {
+        type: "text/plain",
+      });
+
+      // Get subscribe video duration if provided
+      let subscribeDuration = 0;
+      if (scriptSubscribeVideo) {
+        subscribeDuration = await getVideoDuration(scriptSubscribeVideo);
+      }
+
+      // Build FFmpeg command
+      const ffmpegCommand = buildFFmpegCommand(
+        bgMusicDuration,
+        voiceoverDuration,
+        !!scriptVideoOverlay,
+        !!scriptSubscribeVideo,
+        subscribeDuration
+      );
+
+      // Prepare form data
+      const formData = new FormData();
+      formData.append("ffmpeg_command", ffmpegCommand);
+      formData.append("files", scriptBackgroundMusic);
+      formData.append("files", voiceoverFile);
+      formData.append("files", scriptImage);
+
+      // Add video overlay if provided
+      if (scriptVideoOverlay) {
+        formData.append("files", scriptVideoOverlay);
+      }
+
+      formData.append("files", srtFile);
+
+      // Add subscribe video if provided
+      if (scriptSubscribeVideo) {
+        formData.append("files", scriptSubscribeVideo);
+      }
+
+      // Submit render job
+      const response = await fetch(`${renderServerUrl}/render`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error("Failed to submit render job");
+      }
+
+      const { job_id } = await response.json();
+      setRenderJobId(job_id);
+
+      // Poll for completion
+      await pollRenderStatus(job_id);
+    } catch (error) {
+      console.error("Render failed:", error);
+      toast({
+        title: "Render Failed",
+        description:
+          error instanceof Error ? error.message : "Failed to render video",
+        variant: "destructive",
+      });
+      setIsRendering(false);
+    }
+  };
+
+  const getAudioDuration = (file: File): Promise<number> => {
+    return new Promise((resolve, reject) => {
+      const audio = document.createElement("audio");
+      audio.preload = "metadata";
+      audio.onloadedmetadata = () => {
+        resolve(audio.duration);
+      };
+      audio.onerror = reject;
+      audio.src = URL.createObjectURL(file);
+    });
+  };
+
+  const getVideoDuration = (file: File): Promise<number> => {
+    return new Promise((resolve, reject) => {
+      const video = document.createElement("video");
+      video.preload = "metadata";
+      video.onloadedmetadata = () => {
+        resolve(video.duration);
+      };
+      video.onerror = reject;
+      video.src = URL.createObjectURL(file);
+    });
+  };
+
+  const generateSRTContent = (
+    timings: Array<{ text: string; start: number; end: number }>,
+    maxDuration: number
+  ): string => {
+    let srtContent = "";
+    timings.forEach((timing, index) => {
+      // Only include timings within the max duration
+      if (timing.start < maxDuration) {
+        const endTime = Math.min(timing.end, maxDuration);
+        srtContent += `${index + 1}\n`;
+        srtContent += `${formatSRTTime(timing.start)} --> ${formatSRTTime(
+          endTime
+        )}\n`;
+        srtContent += `${timing.text}\n\n`;
+      }
+    });
+    return srtContent;
+  };
+
+  const formatSRTTime = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const ms = Math.floor((seconds % 1) * 1000);
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(
+      2,
+      "0"
+    )}:${String(secs).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+  };
+
+  const findBestCutPoint = (targetDuration: number): number => {
+    // Find the best silent gap to cut at, closest to the target duration
+    if (affirmationTimings.length === 0) return targetDuration;
+
+    let bestCutPoint = targetDuration;
+    let smallestDiff = Infinity;
+
+    // Look through affirmation timings to find gaps
+    for (let i = 0; i < affirmationTimings.length - 1; i++) {
+      const gapStart = affirmationTimings[i].end;
+      const gapEnd = affirmationTimings[i + 1].start;
+      const gapMidpoint = (gapStart + gapEnd) / 2;
+
+      // Only consider gaps that are reasonably close to target
+      if (gapMidpoint <= targetDuration) {
+        const diff = Math.abs(gapMidpoint - targetDuration);
+        if (diff < smallestDiff) {
+          smallestDiff = diff;
+          bestCutPoint = gapMidpoint;
+        }
+      }
+    }
+
+    // If the last affirmation ends before target duration, that's our cut point
+    const lastEnd = affirmationTimings[affirmationTimings.length - 1].end;
+    if (
+      lastEnd <= targetDuration &&
+      Math.abs(lastEnd - targetDuration) < smallestDiff
+    ) {
+      bestCutPoint = lastEnd;
+    }
+
+    return bestCutPoint;
+  };
+
+  const buildFFmpegCommand = (
+    bgMusicDuration: number,
+    voiceoverDuration: number,
+    hasVideoOverlay: boolean,
+    hasSubscribeVideo: boolean,
+    subscribeDuration: number
+  ): string => {
+    // Determine actual video duration
+    const videoDuration = bgMusicDuration;
+    const voiceoverNeedsTrim = voiceoverDuration > bgMusicDuration;
+
+    // Find best cut point for voiceover if it needs trimming
+    const voiceoverCutPoint = voiceoverNeedsTrim
+      ? findBestCutPoint(bgMusicDuration)
+      : voiceoverDuration;
+
+    // Build filter complex
+    // Input 0: background music (${scriptBackgroundMusic!.name})
+    // Input 1: voiceover (voiceover.mp3)
+    // Input 2: image (${scriptImage!.name})
+    // Input 3: video overlay (if provided)
+    // Input 3/4: subtitles (subtitles.srt)
+    // Input 4/5: subscribe video (if provided)
+
+    let filterComplex = "";
+    let currentLayer = "img";
+    let subscribeInputIndex = 3; // Will be adjusted based on whether video overlay exists
+
+    // Scale image to 1920x1080 and loop it for the duration
+    filterComplex += `[2:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${videoDuration}[img];`;
+
+    // Add video overlay if provided (30% opacity, looped for entire duration)
+    if (hasVideoOverlay) {
+      filterComplex += `[3:v]scale=1920:1080:force_original_aspect_ratio=decrease,format=yuva420p,colorchannelmixer=aa=0.3,loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[overlay];`;
+      filterComplex += `[img][overlay]overlay=format=auto[withoverlay];`;
+      currentLayer = "withoverlay";
+      subscribeInputIndex = 4; // Subscribe video will be input 4 if overlay exists
+    }
+
+    // Add subtitles on top - centered vertically with Alice Bold font
+    filterComplex += `[${currentLayer}]subtitles=subtitles.srt:force_style='FontName=Alice Bold,Bold=1,FontSize=32,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,Shadow=1,Alignment=10,MarginV=0'[withsubs];`;
+
+    // Add subscribe video overlay at 6 timestamps if provided
+    if (hasSubscribeVideo) {
+      // Target timestamps: 0:00, 4:26, 9:00, 13:00, 18:36, 22:10
+      // In seconds: 0, 266, 540, 780, 1116, 1330
+      const targetTimestamps = [0, 266, 540, 780, 1116, 1330];
+
+      // First, loop the subscribe video so it's available throughout the entire duration
+      filterComplex += `[${subscribeInputIndex}:v]loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[loopsub];`;
+
+      // For each target timestamp, find where in the animation loop it falls
+      // and adjust to show complete animation cycles
+      const timeWindows = targetTimestamps.map((target) => {
+        // Calculate how far into a loop cycle this timestamp falls
+        const offsetInCycle = target % subscribeDuration;
+
+        // Adjust start time to beginning of the nearest cycle
+        const adjustedStart = target - offsetInCycle;
+
+        // Show the full animation duration
+        const adjustedEnd = adjustedStart + subscribeDuration;
+
+        // Make sure we don't go beyond video duration
+        const endTime = Math.min(adjustedEnd, videoDuration);
+
+        return { start: adjustedStart, end: endTime };
+      });
+
+      // Create enable expression for all adjusted time windows
+      const enableExpr = timeWindows
+        .map(
+          ({ start, end }) => `between(t,${start.toFixed(3)},${end.toFixed(3)})`
+        )
+        .join("+");
+
+      // Overlay the looped video, only visible during the calculated time windows
+      // Position at 20% from bottom, centered horizontally
+      filterComplex += `[withsubs][loopsub]overlay=x=(W-w)/2:y=H*0.8-h/2:enable='${enableExpr}'[v];`;
+    } else {
+      // No subscribe video, just pass through
+      filterComplex += `[withsubs]copy[v];`;
+    }
+
+    // Audio processing: background music at -2dB, voiceover at +12dB
+    if (voiceoverNeedsTrim) {
+      // Trim voiceover at the best cut point (silent gap)
+      filterComplex += `[1:a]atrim=0:${voiceoverCutPoint},volume=15dB[vo];`;
+      filterComplex += `[0:a]volume=-2dB[bg];`;
+    } else {
+      filterComplex += `[1:a]volume=15dB[vo];`;
+      filterComplex += `[0:a]volume=-2dB[bg];`;
+    }
+
+    // Mix audio tracks - background music determines duration
+    filterComplex += `[bg][vo]amix=inputs=2:duration=first:dropout_transition=2[a]`;
+
+    // Build input list - escape filenames to handle spaces and special characters
+    const escapeFilename = (filename: string): string => {
+      // Replace spaces and wrap in quotes if needed
+      if (
+        filename.includes(" ") ||
+        filename.includes("(") ||
+        filename.includes(")")
+      ) {
+        return `"${filename.replace(/"/g, '\\"')}"`;
+      }
+      return filename;
+    };
+
+    let inputList = `-i ${escapeFilename(
+      scriptBackgroundMusic!.name
+    )} -i voiceover.mp3 -i ${escapeFilename(scriptImage!.name)}`;
+    if (hasVideoOverlay) {
+      inputList += ` -i ${escapeFilename(scriptVideoOverlay!.name)}`;
+    }
+    if (hasSubscribeVideo) {
+      inputList += ` -i ${escapeFilename(scriptSubscribeVideo!.name)}`;
+    }
+
+    // Build full command - try GPU encoding with h264_nvenc
+    const command = `ffmpeg ${inputList} -filter_complex "${filterComplex}" -map "[v]" -map "[a]" -c:v h264_nvenc -preset fast -b:v 5M -c:a aac -b:a 192k -t ${videoDuration} output.mp4`;
+
+    return command;
+  };
+
+  const pollRenderStatus = async (jobId: string): Promise<void> => {
+    const pollInterval = 2000; // 2 seconds
+
+    while (true) {
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+
+      try {
+        const response = await fetch(`${renderServerUrl}/status/${jobId}`);
+        const status = await response.json();
+
+        // Debug log to see what the server is returning
+        console.log("Server status response:", status);
+
+        // Update logs if provided by server (check before error to capture error logs)
+        if (status.log) {
+          setRenderLogs((prev) => {
+            const newLogs = Array.isArray(status.log)
+              ? status.log
+              : [status.log];
+            // Only add new logs that aren't already in the array
+            const uniqueLogs = [...prev];
+            newLogs.forEach((log: string) => {
+              if (!uniqueLogs.includes(log)) {
+                uniqueLogs.push(log);
+              }
+            });
+            return uniqueLogs;
+          });
+        } else if (status.message) {
+          // Handle single message as well
+          setRenderLogs((prev) => {
+            if (!prev.includes(status.message)) {
+              return [...prev, status.message];
+            }
+            return prev;
+          });
+        }
+
+        // If there's an error, add it to logs and throw
+        if (status.error) {
+          const errorMessage =
+            typeof status.error === "string"
+              ? status.error
+              : JSON.stringify(status.error);
+
+          // Add error to logs before throwing
+          setRenderLogs((prev) => {
+            const errorLines = errorMessage
+              .split("\n")
+              .filter((line) => line.trim());
+            const uniqueLogs = [...prev];
+            errorLines.forEach((line: string) => {
+              if (!uniqueLogs.includes(line)) {
+                uniqueLogs.push(line);
+              }
+            });
+            return uniqueLogs;
+          });
+
+          throw new Error(errorMessage);
+        }
+
+        // Update progress - check multiple possible field names
+        let progress = 0;
+        if (typeof status.progress === "number") {
+          progress = status.progress;
+        } else if (typeof status.progress_percentage === "number") {
+          progress = status.progress_percentage;
+        } else if (typeof status.percent === "number") {
+          progress = status.percent;
+        } else if (typeof status.percentage === "number") {
+          progress = status.percentage;
+        }
+
+        // Ensure progress is between 0 and 100
+        progress = Math.min(100, Math.max(0, progress));
+        console.log("Setting render progress to:", progress);
+        setRenderProgress(progress);
+
+        if (status.status === "completed") {
+          setRenderProgress(100);
+          setRenderedVideoUrl(`${renderServerUrl}${status.video_url}`);
+          setIsRendering(false);
+          toast({
+            title: "Render Complete",
+            description: "Your video has been rendered successfully!",
+          });
+          break;
+        }
+
+        if (status.status === "failed") {
+          const errorMessage = status.error || "Render failed";
+
+          // Add error to logs before throwing
+          setRenderLogs((prev) => {
+            const errorLines = errorMessage
+              .split("\n")
+              .filter((line) => line.trim());
+            const uniqueLogs = [...prev];
+            errorLines.forEach((line: string) => {
+              if (!uniqueLogs.includes(line)) {
+                uniqueLogs.push(line);
+              }
+            });
+            return uniqueLogs;
+          });
+
+          throw new Error(errorMessage);
+        }
+      } catch (error) {
+        console.error("Failed to poll render status:", error);
+
+        // Add error to logs if not already there
+        if (error instanceof Error) {
+          setRenderLogs((prev) => {
+            const errorLines = error.message
+              .split("\n")
+              .filter((line) => line.trim());
+            const uniqueLogs = [...prev];
+            errorLines.forEach((line: string) => {
+              if (!uniqueLogs.includes(line)) {
+                uniqueLogs.push(line);
+              }
+            });
+            return uniqueLogs;
+          });
+        }
+
+        setIsRendering(false);
+        throw error;
+      }
+    }
   };
 
   const generateDescription = async () => {
@@ -1891,6 +2385,112 @@ ${srtContent}`;
                     onChange={(e) => setSilenceGap(parseFloat(e.target.value))}
                   />
                 </div>
+
+                <Separator />
+
+                <div>
+                  <Label className="text-sm mb-2 block">Video Assets</Label>
+                  <div className="space-y-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        document.getElementById("script-image-input")?.click()
+                      }
+                      className="w-full"
+                    >
+                      {scriptImage && <Check className="w-4 h-4 mr-1" />}
+                      Add Image
+                    </Button>
+                    <input
+                      id="script-image-input"
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setScriptImage(file);
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        document.getElementById("script-music-input")?.click()
+                      }
+                      className="w-full"
+                    >
+                      {scriptBackgroundMusic && (
+                        <Check className="w-4 h-4 mr-1" />
+                      )}
+                      Add Background Music
+                    </Button>
+                    <input
+                      id="script-music-input"
+                      type="file"
+                      accept="audio/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setScriptBackgroundMusic(file);
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        document.getElementById("script-overlay-input")?.click()
+                      }
+                      className="w-full"
+                    >
+                      {scriptVideoOverlay && <Check className="w-4 h-4 mr-1" />}
+                      Add Video Overlay
+                    </Button>
+                    <input
+                      id="script-overlay-input"
+                      type="file"
+                      accept="video/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setScriptVideoOverlay(file);
+                        }
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        document
+                          .getElementById("script-subscribe-input")
+                          ?.click()
+                      }
+                      className="w-full"
+                    >
+                      {scriptSubscribeVideo && (
+                        <Check className="w-4 h-4 mr-1" />
+                      )}
+                      Add Subscribe Animation
+                    </Button>
+                    <input
+                      id="script-subscribe-input"
+                      type="file"
+                      accept="video/*"
+                      className="hidden"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        if (file) {
+                          setScriptSubscribeVideo(file);
+                        }
+                      }}
+                    />
+                  </div>
+                </div>
               </CardContent>
             </Card>
 
@@ -1968,6 +2568,73 @@ ${srtContent}`;
                           Script
                         </Button>
                       </div>
+
+                      <Button
+                        onClick={() => handleRenderVideo()}
+                        className="w-full bg-gradient-primary hover:shadow-glow"
+                        size="sm"
+                        disabled={
+                          isRendering ||
+                          !scriptBackgroundMusic ||
+                          !scriptImage ||
+                          affirmationTimings.length === 0
+                        }
+                      >
+                        <Video className="w-4 h-4 mr-0.5" />
+                        {isRendering ? "Rendering..." : "Render Video"}
+                      </Button>
+
+                      {isRendering && (
+                        <div className="space-y-2">
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-xs text-muted-foreground">
+                              <span>Progress</span>
+                              <span>{Math.round(renderProgress)}%</span>
+                            </div>
+                            <Progress value={renderProgress} className="h-2" />
+                          </div>
+                          {renderLogs.length > 0 && (
+                            <div className="bg-muted/30 rounded-md p-2 max-h-48 overflow-y-auto">
+                              <div className="text-xs font-medium text-muted-foreground mb-1">
+                                Server Logs:
+                              </div>
+                              <div className="space-y-0.5">
+                                {renderLogs.map((log, index) => {
+                                  const isError =
+                                    log.toLowerCase().includes("error") ||
+                                    log.toLowerCase().includes("failed") ||
+                                    log.toLowerCase().includes("no such file");
+                                  return (
+                                    <div
+                                      key={index}
+                                      className={`text-xs font-mono ${
+                                        isError
+                                          ? "text-destructive"
+                                          : "text-muted-foreground"
+                                      }`}
+                                    >
+                                      {log}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {renderedVideoUrl && (
+                        <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded">
+                          <a
+                            href={renderedVideoUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            Download Rendered Video
+                          </a>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}
@@ -2299,6 +2966,29 @@ ${srtContent}`;
                   </div>
                 </>
               )}
+            </div>
+
+            <Separator />
+
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium">Render Server</h3>
+              <div>
+                <Label htmlFor="renderServerUrl">Render Server URL</Label>
+                <Input
+                  id="renderServerUrl"
+                  type="text"
+                  placeholder="http://localhost:8001"
+                  value={renderServerUrl}
+                  onChange={(e) => {
+                    setRenderServerUrl(e.target.value);
+                    localStorage.setItem("render-server-url", e.target.value);
+                  }}
+                  className="w-full"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  URL of your FFmpeg render server (Docker container)
+                </p>
+              </div>
             </div>
 
             <Separator />

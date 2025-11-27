@@ -76,14 +76,19 @@ const AffirmationGenerator = () => {
     voice: "af_bella(3)+af_v0nicole(6)+af_kore(1)",
     speed: 0.9,
   });
-  const [silenceGap, setSilenceGap] = useState(2.5);
+  const [maxCharsPerLine, setMaxCharsPerLine] = useState(30);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [progress, setProgress] = useState(0);
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
 
   const [affirmationTimings, setAffirmationTimings] = useState<
-    Array<{ text: string; start: number; end: number }>
+    Array<{
+      text: string;
+      start: number;
+      end: number;
+      words?: Array<{ word: string; start: number; end: number }>;
+    }>
   >([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showScriptDialog, setShowScriptDialog] = useState(false);
@@ -562,9 +567,6 @@ Use clear, single-line affirmations.${
     setRenderLogs([]);
 
     try {
-      // Get background music duration
-      const bgMusicDuration = await getAudioDuration(scriptBackgroundMusic);
-
       // Convert generated audio URL to blob
       const voiceoverResponse = await fetch(generatedAudio);
       const voiceoverBlob = await voiceoverResponse.blob();
@@ -575,17 +577,11 @@ Use clear, single-line affirmations.${
       // Get voiceover duration
       const voiceoverDuration = await getAudioDuration(voiceoverFile);
 
-      // Find the best cut point if voiceover is longer than background music
-      const voiceoverNeedsTrim = voiceoverDuration > bgMusicDuration;
-      const effectiveDuration = voiceoverNeedsTrim
-        ? findBestCutPoint(bgMusicDuration)
-        : Math.min(voiceoverDuration, bgMusicDuration);
+      // Video duration is voiceover duration + 2 seconds
+      const videoDuration = voiceoverDuration + 2;
 
-      // Generate SRT file from affirmation timings (only up to effective duration)
-      const srtContent = generateSRTContent(
-        affirmationTimings,
-        effectiveDuration
-      );
+      // Generate SRT file from affirmation timings
+      const srtContent = generateSRTContent(affirmationTimings, videoDuration);
       const srtBlob = new Blob([srtContent], { type: "text/plain" });
       const srtFile = new File([srtBlob], "subtitles.srt", {
         type: "text/plain",
@@ -599,7 +595,7 @@ Use clear, single-line affirmations.${
 
       // Build FFmpeg command
       const ffmpegCommand = buildFFmpegCommand(
-        bgMusicDuration,
+        videoDuration,
         voiceoverDuration,
         !!scriptVideoOverlay,
         !!scriptSubscribeVideo,
@@ -676,23 +672,93 @@ Use clear, single-line affirmations.${
     });
   };
 
+  // Helper to check if a word is punctuation (no space before)
+  const isPunctuation = (word: string): boolean => {
+    return /^[.,!?;:)}\]'""'']+$/.test(word.trim());
+  };
+
+  // Generate SRT content from Kokoro word-level timestamps
   const generateSRTContent = (
-    timings: Array<{ text: string; start: number; end: number }>,
+    timings: Array<{
+      text: string;
+      start: number;
+      end: number;
+      words?: Array<{ word: string; start: number; end: number }>;
+    }>,
     maxDuration: number
   ): string => {
-    let srtContent = "";
-    timings.forEach((timing, index) => {
-      // Only include timings within the max duration
-      if (timing.start < maxDuration) {
-        const endTime = Math.min(timing.end, maxDuration);
-        srtContent += `${index + 1}\n`;
-        srtContent += `${formatSRTTime(timing.start)} --> ${formatSRTTime(
-          endTime
-        )}\n`;
-        srtContent += `${timing.text}\n\n`;
+    // First pass: collect all captions with their natural timings
+    const captions: Array<{ text: string; start: number; end: number }> = [];
+
+    for (const timing of timings) {
+      if (timing.start >= maxDuration) continue;
+
+      // Use Kokoro's word-level timestamps
+      if (timing.words && timing.words.length > 0) {
+        let currentLine = "";
+        let lineStartTime = 0;
+        let lineEndTime = 0;
+
+        for (let i = 0; i < timing.words.length; i++) {
+          const word = timing.words[i];
+          if (word.start >= maxDuration) break;
+
+          // Build the test line
+          const needsSpace =
+            currentLine.length > 0 && !isPunctuation(word.word);
+          const testLine = currentLine + (needsSpace ? " " : "") + word.word;
+
+          // Check if adding this word exceeds the character limit
+          if (testLine.length <= maxCharsPerLine) {
+            // Add word to current line
+            if (currentLine.length === 0) {
+              lineStartTime = word.start;
+            }
+            currentLine = testLine;
+            lineEndTime = Math.min(word.end, maxDuration);
+          } else {
+            // Line is full - save current line
+            if (currentLine.length > 0) {
+              captions.push({
+                text: currentLine,
+                start: lineStartTime,
+                end: word.start, // Natural end is when next word starts
+              });
+            }
+            // Start new line with this word
+            currentLine = word.word;
+            lineStartTime = word.start;
+            lineEndTime = Math.min(word.end, maxDuration);
+          }
+        }
+
+        // Save the last line if it has content
+        if (currentLine.length > 0) {
+          captions.push({
+            text: currentLine,
+            start: lineStartTime,
+            end: lineEndTime,
+          });
+        }
       }
+    }
+
+    // Second pass: adjust so each caption ends exactly when the next starts
+    for (let i = 0; i < captions.length - 1; i++) {
+      captions[i].end = captions[i + 1].start;
+    }
+
+    // Generate SRT entries
+    const srtEntries: string[] = [];
+    captions.forEach((caption, index) => {
+      srtEntries.push(
+        `${index + 1}\n${formatSRTTime(caption.start)} --> ${formatSRTTime(
+          caption.end
+        )}\n${caption.text}\n`
+      );
     });
-    return srtContent;
+
+    return srtEntries.join("\n");
   };
 
   const formatSRTTime = (seconds: number): string => {
@@ -742,20 +808,13 @@ Use clear, single-line affirmations.${
   };
 
   const buildFFmpegCommand = (
-    bgMusicDuration: number,
+    videoDuration: number,
     voiceoverDuration: number,
     hasVideoOverlay: boolean,
     hasSubscribeVideo: boolean,
     subscribeDuration: number
   ): string => {
-    // Determine actual video duration
-    const videoDuration = bgMusicDuration;
-    const voiceoverNeedsTrim = voiceoverDuration > bgMusicDuration;
-
-    // Find best cut point for voiceover if it needs trimming
-    const voiceoverCutPoint = voiceoverNeedsTrim
-      ? findBestCutPoint(bgMusicDuration)
-      : voiceoverDuration;
+    // Video duration is already calculated as voiceover + 2 seconds
 
     // Build filter complex
     // Input 0: background music (${scriptBackgroundMusic!.name})
@@ -825,18 +884,14 @@ Use clear, single-line affirmations.${
       filterComplex += `[withsubs]copy[v];`;
     }
 
-    // Audio processing: background music at -2dB, voiceover at +12dB
-    if (voiceoverNeedsTrim) {
-      // Trim voiceover at the best cut point (silent gap)
-      filterComplex += `[1:a]atrim=0:${voiceoverCutPoint},volume=15dB[vo];`;
-      filterComplex += `[0:a]volume=-2dB[bg];`;
-    } else {
-      filterComplex += `[1:a]volume=15dB[vo];`;
-      filterComplex += `[0:a]volume=-2dB[bg];`;
-    }
+    // Audio processing:
+    // - Voiceover at +15dB (full duration)
+    // - Background music: trim to video duration, apply volume -2dB, fade out in last 2 seconds
+    filterComplex += `[1:a]volume=15dB[vo];`;
+    filterComplex += `[0:a]atrim=0:${videoDuration},volume=-2dB,afade=t=out:st=${voiceoverDuration}:d=2[bg];`;
 
-    // Mix audio tracks - background music determines duration
-    filterComplex += `[bg][vo]amix=inputs=2:duration=first:dropout_transition=2[a]`;
+    // Mix audio tracks - longest duration determines output
+    filterComplex += `[bg][vo]amix=inputs=2:duration=longest:dropout_transition=2[a]`;
 
     // Build input list - escape filenames to handle spaces and special characters
     const escapeFilename = (filename: string): string => {
@@ -1353,6 +1408,9 @@ ${srtContent}`;
 
   const generateAudioClips = async (affirmationLines: string[]) => {
     const audioClips: Blob[] = [];
+    const wordTimings: Array<
+      Array<{ word: string; start: number; end: number }>
+    > = [];
 
     for (let i = 0; i < affirmationLines.length; i++) {
       const affirmation = affirmationLines[i].trim();
@@ -1361,23 +1419,61 @@ ${srtContent}`;
       try {
         setProgress(((i + 1) / affirmationLines.length) * 70); // 70% for individual clips
 
-        const response = await fetch("http://localhost:8880/v1/audio/speech", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            input: affirmation,
-            ...voiceSettings,
-          }),
-        });
+        // Use Kokoro's /dev/captioned_speech endpoint to get word-level timestamps
+        const response = await fetch(
+          "http://localhost:8880/dev/captioned_speech",
+          {
+            method: "POST",
+            mode: "cors",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: voiceSettings.model,
+              input: affirmation,
+              voice: voiceSettings.voice,
+              speed: voiceSettings.speed,
+              response_format: "wav",
+              timestamps: true,
+              stream: false,
+            }),
+          }
+        );
 
         if (!response.ok) {
           throw new Error(`Failed to generate audio for: "${affirmation}"`);
         }
 
-        const audioBlob = await response.blob();
-        audioClips.push(audioBlob);
+        const data = await response.json();
+
+        // Extract audio
+        if (data.audio) {
+          const audioBlob = new Blob(
+            [Uint8Array.from(atob(data.audio), (c) => c.charCodeAt(0))],
+            { type: "audio/wav" }
+          );
+          audioClips.push(audioBlob);
+        } else {
+          throw new Error("No audio data in response");
+        }
+
+        // Extract word timings (check both timestamps and captions fields)
+        let wordTimingsForLine: Array<{
+          word: string;
+          start: number;
+          end: number;
+        }> = [];
+
+        const timestampData = data.timestamps || data.captions || [];
+        if (Array.isArray(timestampData) && timestampData.length > 0) {
+          wordTimingsForLine = timestampData.map((ts: any) => ({
+            word: ts.word || ts.text || "",
+            start: ts.start || ts.start_time || 0,
+            end: ts.end || ts.end_time || 0,
+          }));
+        }
+
+        wordTimings.push(wordTimingsForLine);
       } catch (error) {
         toast({
           title: "Generation Error",
@@ -1388,13 +1484,16 @@ ${srtContent}`;
       }
     }
 
-    return audioClips;
+    return { audioClips, wordTimings };
   };
 
   const removeInternalPauses = (
     audioBuffer: AudioBuffer,
     maxPauseLength: number = 0.4
-  ): AudioBuffer => {
+  ): {
+    buffer: AudioBuffer;
+    timeAdjustments: Array<{ originalTime: number; adjustedTime: number }>;
+  } => {
     // Use the same sample rate as the input buffer
     const inputData = audioBuffer.getChannelData(0);
     const sampleRate = audioBuffer.sampleRate;
@@ -1403,7 +1502,13 @@ ${srtContent}`;
 
     const outputData: number[] = [];
     let currentSilenceLength = 0;
+    let removedSamples = 0;
+    const timeAdjustments: Array<{
+      originalTime: number;
+      adjustedTime: number;
+    }> = [];
 
+    // Track time adjustments at key points
     for (let i = 0; i < inputData.length; i++) {
       const sample = inputData[i];
       const isSilent = Math.abs(sample) < silenceThreshold;
@@ -1413,12 +1518,28 @@ ${srtContent}`;
         // Only add silence if it's shorter than max allowed pause
         if (currentSilenceLength <= maxPauseSamples) {
           outputData.push(sample);
+        } else {
+          // Track removed silence
+          removedSamples++;
+          // Record adjustment every 0.1 seconds of removed audio
+          if (removedSamples % Math.floor(sampleRate * 0.1) === 0) {
+            timeAdjustments.push({
+              originalTime: i / sampleRate,
+              adjustedTime: outputData.length / sampleRate,
+            });
+          }
         }
       } else {
         currentSilenceLength = 0;
         outputData.push(sample);
       }
     }
+
+    // Add final adjustment point
+    timeAdjustments.push({
+      originalTime: inputData.length / sampleRate,
+      adjustedTime: outputData.length / sampleRate,
+    });
 
     // Create new audio buffer with reduced pauses using the same sample rate
     const tempContext = new (window.AudioContext ||
@@ -1436,31 +1557,48 @@ ${srtContent}`;
     // Close the temporary context to free resources
     tempContext.close();
 
-    return outputBuffer;
+    return { buffer: outputBuffer, timeAdjustments };
   };
 
   const combineAudioClips = async (
     audioClips: Blob[],
-    affirmationLines: string[]
+    affirmationLines: string[],
+    wordTimings: Array<Array<{ word: string; start: number; end: number }>>
   ): Promise<Blob> => {
     const audioContext = new (window.AudioContext ||
       (window as any).webkitAudioContext)();
     const audioBuffers: AudioBuffer[] = [];
-    const timings: Array<{ text: string; start: number; end: number }> = [];
+    const timings: Array<{
+      text: string;
+      start: number;
+      end: number;
+      words?: Array<{ word: string; start: number; end: number }>;
+    }> = [];
 
     try {
-      // Decode all audio clips and remove internal pauses
+      // Check if we have word timings
+      const hasWordTimings = wordTimings.some((wt) => wt && wt.length > 0);
+
+      // Decode all audio clips
       for (const clip of audioClips) {
         const arrayBuffer = await clip.arrayBuffer();
         const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
-        const processedBuffer = removeInternalPauses(audioBuffer);
-        audioBuffers.push(processedBuffer);
+
+        // If we have word timestamps, keep original audio (timestamps match original)
+        // If no word timestamps, remove pauses
+        if (hasWordTimings) {
+          audioBuffers.push(audioBuffer);
+        } else {
+          const { buffer: processedBuffer } = removeInternalPauses(audioBuffer);
+          audioBuffers.push(processedBuffer);
+        }
       }
 
-      // Calculate total duration with silence gaps
-      const totalDuration =
-        audioBuffers.reduce((sum, buffer) => sum + buffer.duration, 0) +
-        silenceGap * (audioBuffers.length - 1);
+      // Calculate total duration
+      const totalDuration = audioBuffers.reduce(
+        (sum, buffer) => sum + buffer.duration,
+        0
+      );
 
       // Create output buffer
       const sampleRate = audioBuffers[0].sampleRate;
@@ -1471,7 +1609,7 @@ ${srtContent}`;
       );
       const outputData = outputBuffer.getChannelData(0);
 
-      // Combine audio with silence gaps and track timings
+      // Combine audio and track timings
       let currentTime = 0;
       let currentOffset = 0;
       for (let i = 0; i < audioBuffers.length; i++) {
@@ -1480,11 +1618,22 @@ ${srtContent}`;
         const startTime = currentTime;
         const endTime = currentTime + buffer.duration;
 
-        // Track timing for .srt generation (will adjust end times later)
+        // Adjust word timings by adding offset for combined audio position
+        const adjustedWordTimings =
+          wordTimings[i]?.length > 0
+            ? wordTimings[i].map((word) => ({
+                word: word.word,
+                start: word.start + startTime,
+                end: word.end + startTime,
+              }))
+            : undefined;
+
+        // Track timing for .srt generation
         timings.push({
           text: affirmationLines[i].trim(),
           start: startTime,
           end: endTime,
+          words: adjustedWordTimings,
         });
 
         // Copy audio data
@@ -1494,20 +1643,6 @@ ${srtContent}`;
 
         currentOffset += inputData.length;
         currentTime = endTime;
-
-        // Add silence gap (except after last clip)
-        if (i < audioBuffers.length - 1) {
-          const silenceSamples = silenceGap * sampleRate;
-          // outputData is already initialized to zeros (silence)
-          currentOffset += silenceSamples;
-          currentTime += silenceGap;
-        }
-      }
-
-      // Adjust caption end times to last until 1ms before the next caption starts
-      // This ensures no gap and no overlap between captions
-      for (let i = 0; i < timings.length - 1; i++) {
-        timings[i].end = timings[i + 1].start - 0.001;
       }
 
       // Store timings for .srt generation
@@ -1587,10 +1722,14 @@ ${srtContent}`;
         description: `Processing ${lines.length} affirmations...`,
       });
 
-      const audioClips = await generateAudioClips(lines);
+      const { audioClips, wordTimings } = await generateAudioClips(lines);
 
       setProgress(80);
-      const combinedAudio = await combineAudioClips(audioClips, lines);
+      const combinedAudio = await combineAudioClips(
+        audioClips,
+        lines,
+        wordTimings
+      );
 
       const audioUrl = URL.createObjectURL(combinedAudio);
       setGeneratedAudio(audioUrl);
@@ -1835,14 +1974,77 @@ ${srtContent}`;
       .padStart(3, "0")}`;
   };
 
+  // Generate SRT for download - uses same logic as video rendering
   const generateSrtContent = (): string => {
-    return affirmationTimings
-      .map((timing, index) => {
-        return `${index + 1}\n${formatTime(timing.start)} --> ${formatTime(
-          timing.end
-        )}\n${timing.text}\n`;
-      })
-      .join("\n");
+    // First pass: collect all captions with their natural timings
+    const captions: Array<{ text: string; start: number; end: number }> = [];
+
+    for (const timing of affirmationTimings) {
+      // Use Kokoro's word-level timestamps
+      if (timing.words && timing.words.length > 0) {
+        let currentLine = "";
+        let lineStartTime = 0;
+        let lineEndTime = 0;
+
+        for (let i = 0; i < timing.words.length; i++) {
+          const word = timing.words[i];
+
+          // Build the test line
+          const needsSpace =
+            currentLine.length > 0 && !isPunctuation(word.word);
+          const testLine = currentLine + (needsSpace ? " " : "") + word.word;
+
+          // Check if adding this word exceeds the character limit
+          if (testLine.length <= maxCharsPerLine) {
+            // Add word to current line
+            if (currentLine.length === 0) {
+              lineStartTime = word.start;
+            }
+            currentLine = testLine;
+            lineEndTime = word.end;
+          } else {
+            // Line is full - save current line
+            if (currentLine.length > 0) {
+              captions.push({
+                text: currentLine,
+                start: lineStartTime,
+                end: word.start, // Natural end is when next word starts
+              });
+            }
+            // Start new line with this word
+            currentLine = word.word;
+            lineStartTime = word.start;
+            lineEndTime = word.end;
+          }
+        }
+
+        // Save the last line if it has content
+        if (currentLine.length > 0) {
+          captions.push({
+            text: currentLine,
+            start: lineStartTime,
+            end: lineEndTime,
+          });
+        }
+      }
+    }
+
+    // Second pass: adjust so each caption ends exactly when the next starts
+    for (let i = 0; i < captions.length - 1; i++) {
+      captions[i].end = captions[i + 1].start;
+    }
+
+    // Generate SRT entries
+    const srtEntries: string[] = [];
+    captions.forEach((caption, index) => {
+      srtEntries.push(
+        `${index + 1}\n${formatTime(caption.start)} --> ${formatTime(
+          caption.end
+        )}\n${caption.text}\n`
+      );
+    });
+
+    return srtEntries.join("\n");
   };
 
   const handleDownload = () => {
@@ -1919,20 +2121,17 @@ ${srtContent}`;
         let newVoice = "";
         let shortcutName = "";
         let newSpeed = 0.9;
-        let newSilenceGap = 1;
         let autoApplyEQ = false;
 
         if (event.key.toLowerCase() === "i") {
           newVoice = "af_jessica(1)+af_v0nicole(8)+af_v0(1)";
           shortcutName = "Ivory Affirmation";
           newSpeed = 0.8;
-          newSilenceGap = 6;
           event.preventDefault();
         } else if (event.key.toLowerCase() === "g") {
           newVoice = "bm_fable(7)+bm_george(2)+af_nicole(1)";
           shortcutName = "Grounded Spirit Meditation";
           newSpeed = 0.8;
-          newSilenceGap = 1.5;
           autoApplyEQ = true;
           event.preventDefault();
         } else if (event.key.toLowerCase() === "m") {
@@ -1946,7 +2145,6 @@ ${srtContent}`;
             voice: newVoice,
             speed: newSpeed,
           }));
-          setSilenceGap(newSilenceGap);
 
           // Auto-apply EQ settings for Gradient Voice
           if (autoApplyEQ) {
@@ -2374,15 +2572,17 @@ ${srtContent}`;
                 </div>
 
                 <div>
-                  <Label htmlFor="silence">Silence Gap (seconds)</Label>
+                  <Label htmlFor="maxChars">Max Characters Per Line</Label>
                   <Input
-                    id="silence"
+                    id="maxChars"
                     type="number"
-                    min="0.5"
-                    max="10"
-                    step="0.5"
-                    value={silenceGap}
-                    onChange={(e) => setSilenceGap(parseFloat(e.target.value))}
+                    min="1"
+                    max="42"
+                    step="1"
+                    value={maxCharsPerLine}
+                    onChange={(e) =>
+                      setMaxCharsPerLine(parseInt(e.target.value))
+                    }
                   />
                 </div>
 

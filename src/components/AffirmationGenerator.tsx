@@ -580,10 +580,10 @@ Use clear, single-line affirmations.${
       // Video duration is voiceover duration + 2 seconds
       const videoDuration = voiceoverDuration + 2;
 
-      // Generate SRT file from affirmation timings
-      const srtContent = generateSRTContent(affirmationTimings, videoDuration);
-      const srtBlob = new Blob([srtContent], { type: "text/plain" });
-      const srtFile = new File([srtBlob], "subtitles.srt", {
+      // Generate ASS file from affirmation timings (uses same timing logic as SRT to prevent overlaps)
+      const assContent = generateASSContent(affirmationTimings, videoDuration);
+      const assBlob = new Blob([assContent], { type: "text/plain" });
+      const assFile = new File([assBlob], "subtitles.ass", {
         type: "text/plain",
       });
 
@@ -614,7 +614,7 @@ Use clear, single-line affirmations.${
         formData.append("files", scriptVideoOverlay);
       }
 
-      formData.append("files", srtFile);
+      formData.append("files", assFile);
 
       // Add subscribe video if provided
       if (scriptSubscribeVideo) {
@@ -772,6 +772,189 @@ Use clear, single-line affirmations.${
     )}:${String(secs).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
   };
 
+  // Format time for ASS format (H:MM:SS.cc) - centiseconds not milliseconds
+  const formatASSTime = (seconds: number): string => {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    const cs = Math.floor((seconds % 1) * 100); // centiseconds
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(
+      secs
+    ).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+  };
+
+  // Generate ASS content from the same caption data used for SRT
+  // This preserves the exact timing solution that fixed overlaps
+  const generateASSContent = (
+    timings: Array<{
+      text: string;
+      start: number;
+      end: number;
+      words?: Array<{ word: string; start: number; end: number }>;
+    }>,
+    maxDuration: number
+  ): string => {
+    // First pass: collect all captions with their natural timings (SAME AS SRT)
+    const captions: Array<{ text: string; start: number; end: number }> = [];
+
+    for (const timing of timings) {
+      if (timing.start >= maxDuration) continue;
+
+      // Use Kokoro's word-level timestamps
+      if (timing.words && timing.words.length > 0) {
+        let currentLine = "";
+        let lineStartTime = 0;
+        let lineEndTime = 0;
+
+        for (let i = 0; i < timing.words.length; i++) {
+          const word = timing.words[i];
+          if (word.start >= maxDuration) break;
+
+          // Build the test line
+          const needsSpace =
+            currentLine.length > 0 && !isPunctuation(word.word);
+          const testLine = currentLine + (needsSpace ? " " : "") + word.word;
+
+          // Check if adding this word exceeds the character limit
+          if (testLine.length <= maxCharsPerLine) {
+            // Add word to current line
+            if (currentLine.length === 0) {
+              lineStartTime = word.start;
+            }
+            currentLine = testLine;
+            lineEndTime = Math.min(word.end, maxDuration);
+          } else {
+            // Line is full - save current line
+            if (currentLine.length > 0) {
+              captions.push({
+                text: currentLine,
+                start: lineStartTime,
+                end: word.start, // Natural end is when next word starts
+              });
+            }
+            // Start new line with this word
+            currentLine = word.word;
+            lineStartTime = word.start;
+            lineEndTime = Math.min(word.end, maxDuration);
+          }
+        }
+
+        // Save the last line if it has content
+        if (currentLine.length > 0) {
+          captions.push({
+            text: currentLine,
+            start: lineStartTime,
+            end: lineEndTime,
+          });
+        }
+      }
+    }
+
+    // Second pass: adjust so each caption ends exactly when the next starts
+    // THIS IS THE KEY FIX THAT PREVENTS OVERLAPS
+    for (let i = 0; i < captions.length - 1; i++) {
+      captions[i].end = captions[i + 1].start;
+    }
+
+    // Generate ASS file with inline color tag approach
+    // Each word timing shows the FULL caption text with inline color overrides
+    // Current spoken word = YELLOW, all other words = WHITE
+    // Alignment: 5 = middle-center (horizontally and vertically centered)
+    // Colors: &H00FFFFFF = white text, &H0000FFFF = yellow (BGR format), &H00000000 = black outline
+    let assContent = `[Script Info]
+; Word-by-word yellow highlighting with inline color tags
+Title: Affirmations
+ScriptType: v4.00+
+WrapStyle: 0
+PlayResX: 1920
+PlayResY: 1080
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: White,Alice Bold,85,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,2,5,10,10,0,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+`;
+
+    // Collect all words with their adjusted timestamps
+    const allWords: Array<{
+      word: string;
+      start: number;
+      end: number;
+      captionIndex: number;
+    }> = [];
+
+    for (let i = 0; i < captions.length; i++) {
+      const caption = captions[i];
+
+      // Find all words that belong to this caption
+      for (const timing of timings) {
+        if (timing.words && timing.words.length > 0) {
+          for (const word of timing.words) {
+            if (word.start >= caption.start && word.start < caption.end) {
+              allWords.push({
+                word: word.word,
+                start: word.start,
+                end: word.end,
+                captionIndex: i,
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Sort words by start time
+    allWords.sort((a, b) => a.start - b.start);
+
+    // Apply overlap prevention to words (same logic as timestamps)
+    for (let i = 0; i < allWords.length - 1; i++) {
+      allWords[i].end = allWords[i + 1].start;
+    }
+
+    // Create dialogue events - each word shows FULL caption with inline color tags
+    // Current word is yellow, all others are white
+    for (let i = 0; i < allWords.length; i++) {
+      const currentWord = allWords[i];
+      const caption = captions[currentWord.captionIndex];
+
+      // Get all words in this caption
+      const captionWords = allWords.filter(
+        (w) => w.captionIndex === currentWord.captionIndex
+      );
+
+      // Build the text with inline color tags
+      let coloredText = "";
+
+      for (let j = 0; j < captionWords.length; j++) {
+        const w = captionWords[j];
+
+        // Add space before word if needed
+        if (j > 0 && !isPunctuation(w.word)) {
+          coloredText += " ";
+        }
+
+        // Is this the current word being spoken?
+        if (w.start === currentWord.start && w.word === currentWord.word) {
+          // Make it YELLOW with color override tag
+          coloredText += `{\\c&H00FFFF&}${w.word}{\\c&HFFFFFF&}`;
+        } else {
+          // Keep it WHITE (default)
+          coloredText += w.word;
+        }
+      }
+
+      // Add dialogue event for this word's timing
+      assContent += `Dialogue: 0,${formatASSTime(
+        currentWord.start
+      )},${formatASSTime(currentWord.end)},White,,0,0,0,,${coloredText}\n`;
+    }
+
+    return assContent;
+  };
+
   const findBestCutPoint = (targetDuration: number): number => {
     // Find the best silent gap to cut at, closest to the target duration
     if (affirmationTimings.length === 0) return targetDuration;
@@ -821,7 +1004,7 @@ Use clear, single-line affirmations.${
     // Input 1: voiceover (voiceover.mp3)
     // Input 2: image (${scriptImage!.name})
     // Input 3: video overlay (if provided)
-    // Input 3/4: subtitles (subtitles.srt)
+    // Input 3/4: subtitles (subtitles.ass)
     // Input 4/5: subscribe video (if provided)
 
     let filterComplex = "";
@@ -839,8 +1022,8 @@ Use clear, single-line affirmations.${
       subscribeInputIndex = 4; // Subscribe video will be input 4 if overlay exists
     }
 
-    // Add subtitles on top - centered vertically with Alice Bold font
-    filterComplex += `[${currentLayer}]subtitles=subtitles.srt:force_style='FontName=Alice Bold,Bold=1,FontSize=32,PrimaryColour=&HFFFFFF,OutlineColour=&H000000,Outline=2,Shadow=1,Alignment=10,MarginV=0'[withsubs];`;
+    // Add subtitles on top using ASS file (styling is already defined in the ASS file)
+    filterComplex += `[${currentLayer}]ass=subtitles.ass[withsubs];`;
 
     // Add subscribe video overlay at 6 timestamps if provided
     if (hasSubscribeVideo) {
@@ -1466,11 +1649,29 @@ ${srtContent}`;
 
         const timestampData = data.timestamps || data.captions || [];
         if (Array.isArray(timestampData) && timestampData.length > 0) {
-          wordTimingsForLine = timestampData.map((ts: any) => ({
+          const rawWordTimings = timestampData.map((ts: any) => ({
             word: ts.word || ts.text || "",
             start: ts.start || ts.start_time || 0,
             end: ts.end || ts.end_time || 0,
           }));
+
+          // MERGE PUNCTUATION: Attach punctuation to previous word to fix placement
+          // This prevents issues like "Depositors. " becoming "Depositors .withdrew"
+          wordTimingsForLine = [];
+          for (let i = 0; i < rawWordTimings.length; i++) {
+            const current = rawWordTimings[i];
+
+            // Check if this is standalone punctuation that should be merged
+            if (isPunctuation(current.word) && wordTimingsForLine.length > 0) {
+              // Merge with previous word
+              const prev = wordTimingsForLine[wordTimingsForLine.length - 1];
+              prev.word = prev.word + current.word; // Attach punctuation
+              prev.end = current.end; // Extend end time to include punctuation
+            } else {
+              // Regular word, add as-is
+              wordTimingsForLine.push({ ...current });
+            }
+          }
         }
 
         wordTimings.push(wordTimingsForLine);
@@ -2114,6 +2315,117 @@ ${srtContent}`;
     }
   };
 
+  // Download ASS file - uses exact same timing as SRT (no overlaps)
+  const handleDownloadAss = () => {
+    if (affirmationTimings.length > 0) {
+      // Calculate video duration (same as in rendering)
+      const voiceoverDuration =
+        affirmationTimings[affirmationTimings.length - 1].end;
+      const videoDuration = voiceoverDuration + 2;
+
+      const assContent = generateASSContent(affirmationTimings, videoDuration);
+      const blob = new Blob([assContent], { type: "text/plain" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = savedScriptTitle
+        ? `${savedScriptTitle
+            .replace(/[<>:"/\\|?*]/g, "_")
+            .replace(/\s+/g, " ")
+            .trim()}.ass`
+        : "affirmations.ass";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      URL.revokeObjectURL(url);
+    }
+  };
+
+  // Generate timestamp file with word-level timestamps
+  // Uses the same overlap-handling logic as SRT/ASS
+  const generateTimestampContent = (
+    timings: Array<{
+      text: string;
+      start: number;
+      end: number;
+      words?: Array<{ word: string; start: number; end: number }>;
+    }>,
+    maxDuration: number
+  ): string => {
+    // Collect all word-level timestamps
+    const wordTimestamps: Array<{ word: string; start: number; end: number }> =
+      [];
+
+    for (const timing of timings) {
+      if (timing.start >= maxDuration) continue;
+
+      // Use Kokoro's word-level timestamps
+      if (timing.words && timing.words.length > 0) {
+        for (const word of timing.words) {
+          if (word.start >= maxDuration) break;
+
+          wordTimestamps.push({
+            word: word.word,
+            start: word.start,
+            end: Math.min(word.end, maxDuration),
+          });
+        }
+      }
+    }
+
+    // Second pass: adjust so each word ends exactly when the next starts
+    // THIS IS THE KEY FIX THAT PREVENTS OVERLAPS (same as SRT/ASS)
+    for (let i = 0; i < wordTimestamps.length - 1; i++) {
+      wordTimestamps[i].end = wordTimestamps[i + 1].start;
+    }
+
+    // Format timestamps as JSON for easy parsing
+    const timestampData = {
+      version: "1.0",
+      note: "Word-level timestamps with overlap prevention (same logic as SRT/ASS subtitles)",
+      words: wordTimestamps.map((wt) => ({
+        word: wt.word,
+        start: wt.start,
+        end: wt.end,
+      })),
+    };
+
+    return JSON.stringify(timestampData, null, 2);
+  };
+
+  // Download timestamp file
+  const handleDownloadTimestamps = () => {
+    if (affirmationTimings.length > 0) {
+      // Calculate video duration (same as in rendering)
+      const voiceoverDuration =
+        affirmationTimings[affirmationTimings.length - 1].end;
+      const videoDuration = voiceoverDuration + 2;
+
+      const timestampContent = generateTimestampContent(
+        affirmationTimings,
+        videoDuration
+      );
+      const blob = new Blob([timestampContent], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = savedScriptTitle
+        ? `${savedScriptTitle
+            .replace(/[<>:"/\\|?*]/g, "_")
+            .replace(/\s+/g, " ")
+            .trim()}_timestamps.json`
+        : "affirmations_timestamps.json";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      URL.revokeObjectURL(url);
+    }
+  };
+
   // Keyboard shortcuts for voice presets
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -2740,6 +3052,26 @@ ${srtContent}`;
                         >
                           <Download className="w-4 h-4 mr-0.5" />
                           .SRT
+                        </Button>
+
+                        <Button
+                          onClick={handleDownloadAss}
+                          variant="outline"
+                          size="sm"
+                          disabled={affirmationTimings.length === 0}
+                        >
+                          <Download className="w-4 h-4 mr-0.5" />
+                          .ASS
+                        </Button>
+
+                        <Button
+                          onClick={handleDownloadTimestamps}
+                          variant="outline"
+                          size="sm"
+                          disabled={affirmationTimings.length === 0}
+                        >
+                          <Download className="w-4 h-4 mr-0.5" />
+                          Timestamps
                         </Button>
 
                         <Button

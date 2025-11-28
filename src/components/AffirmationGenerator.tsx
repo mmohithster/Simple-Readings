@@ -104,7 +104,8 @@ const AffirmationGenerator = () => {
   const [affirmationLength, setAffirmationLength] = useState<"long" | "short">(
     "long"
   );
-  const [scriptImage, setScriptImage] = useState<File | null>(null);
+  const [scriptImages, setScriptImages] = useState<File[]>([]);
+  const [bgAnimation, setBgAnimation] = useState(false);
   const [scriptBackgroundMusic, setScriptBackgroundMusic] =
     useState<File | null>(null);
   const [scriptVideoOverlay, setScriptVideoOverlay] = useState<File | null>(
@@ -553,10 +554,11 @@ Use clear, single-line affirmations.${
       return;
     }
 
-    if (!scriptImage) {
+    if (scriptImages.length === 0) {
       toast({
-        title: "Missing Image",
-        description: "Please add an image to render the video.",
+        title: "Missing Background",
+        description:
+          "Please add at least one background image to render the video.",
         variant: "destructive",
       });
       return;
@@ -597,6 +599,8 @@ Use clear, single-line affirmations.${
       const ffmpegCommand = buildFFmpegCommand(
         videoDuration,
         voiceoverDuration,
+        scriptImages.length,
+        bgAnimation,
         !!scriptVideoOverlay,
         !!scriptSubscribeVideo,
         subscribeDuration
@@ -607,7 +611,11 @@ Use clear, single-line affirmations.${
       formData.append("ffmpeg_command", ffmpegCommand);
       formData.append("files", scriptBackgroundMusic);
       formData.append("files", voiceoverFile);
-      formData.append("files", scriptImage);
+
+      // Add all background images
+      scriptImages.forEach((image) => {
+        formData.append("files", image);
+      });
 
       // Add video overlay if provided
       if (scriptVideoOverlay) {
@@ -993,6 +1001,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const buildFFmpegCommand = (
     videoDuration: number,
     voiceoverDuration: number,
+    numImages: number,
+    enableAnimation: boolean,
     hasVideoOverlay: boolean,
     hasSubscribeVideo: boolean,
     subscribeDuration: number
@@ -1000,26 +1010,71 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     // Video duration is already calculated as voiceover + 2 seconds
 
     // Build filter complex
-    // Input 0: background music (${scriptBackgroundMusic!.name})
+    // Input 0: background music
     // Input 1: voiceover (voiceover.mp3)
-    // Input 2: image (${scriptImage!.name})
-    // Input 3: video overlay (if provided)
-    // Input 3/4: subtitles (subtitles.ass)
-    // Input 4/5: subscribe video (if provided)
+    // Input 2, 3, 4, ...: background images (N images)
+    // Input 2+N: video overlay (if provided)
+    // Input 2+N or 3+N: subscribe video (if provided)
 
     let filterComplex = "";
     let currentLayer = "img";
-    let subscribeInputIndex = 3; // Will be adjusted based on whether video overlay exists
+    let nextInputIndex = 2 + numImages; // First index after images
 
-    // Scale image to 1920x1080 and loop it for the duration
-    filterComplex += `[2:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${videoDuration}[img];`;
+    // Handle background images (single or multiple with crossfade)
+    if (numImages === 1) {
+      // Single image: loop for entire duration (existing logic)
+      filterComplex += `[2:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${videoDuration}[img];`;
+    } else {
+      // Multiple images: spread equally with crossfade
+      const crossfadeDuration = 1.0; // 1 second crossfade
+      const segmentDuration = videoDuration / numImages;
+
+      // Scale and prepare all images with proper duration
+      for (let i = 0; i < numImages; i++) {
+        const inputIndex = 2 + i;
+        // Each image needs to be long enough: its segment + crossfade duration
+        const imageDuration =
+          segmentDuration + (i < numImages - 1 ? crossfadeDuration : 0);
+
+        if (enableAnimation) {
+          // Ken Burns effect: zoom from 1.2x to 1x over the image duration
+          // Use zoompan to create smooth zoom out effect
+          const fps = 30; // frames per second
+          const totalFrames = Math.ceil(imageDuration * fps);
+
+          filterComplex += `[${inputIndex}:v]scale=2304:1296:force_original_aspect_ratio=decrease,pad=2304:1296:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0[scaled${i}];`;
+          filterComplex += `[scaled${i}]zoompan=z='min(1.2-(0.2*on/${totalFrames}),1.2)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps},trim=duration=${imageDuration.toFixed(
+            3
+          )},setpts=PTS-STARTPTS[img${i}];`;
+        } else {
+          // No animation: standard scale
+          filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${imageDuration.toFixed(
+            3
+          )},setpts=PTS-STARTPTS[img${i}];`;
+        }
+      }
+
+      // Build crossfade chain
+      let previousOutput = "img0";
+
+      for (let i = 1; i < numImages; i++) {
+        const offsetTime = segmentDuration * i;
+        const outputLabel = i === numImages - 1 ? "img" : `xf${i}`;
+
+        filterComplex += `[${previousOutput}][img${i}]xfade=transition=fade:duration=${crossfadeDuration}:offset=${offsetTime.toFixed(
+          3
+        )}[${outputLabel}];`;
+        previousOutput = outputLabel;
+      }
+    }
 
     // Add video overlay if provided (30% opacity, looped for entire duration)
     if (hasVideoOverlay) {
-      filterComplex += `[3:v]scale=1920:1080:force_original_aspect_ratio=decrease,format=yuva420p,colorchannelmixer=aa=0.3,loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[overlay];`;
+      const overlayInputIndex = nextInputIndex;
+      nextInputIndex++;
+      filterComplex += `[${overlayInputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,format=yuva420p,colorchannelmixer=aa=0.3,loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[overlay];`;
       filterComplex += `[img][overlay]overlay=format=auto[withoverlay];`;
       currentLayer = "withoverlay";
-      subscribeInputIndex = 4; // Subscribe video will be input 4 if overlay exists
     }
 
     // Add subtitles on top using ASS file (styling is already defined in the ASS file)
@@ -1027,6 +1082,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     // Add subscribe video overlay at 6 timestamps if provided
     if (hasSubscribeVideo) {
+      const subscribeInputIndex = nextInputIndex;
+      nextInputIndex++;
+
       // Target timestamps: 0:00, 4:26, 9:00, 13:00, 18:36, 22:10
       // In seconds: 0, 266, 540, 780, 1116, 1330
       const targetTimestamps = [0, 266, 540, 780, 1116, 1330];
@@ -1089,9 +1147,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
       return filename;
     };
 
+    // Build input list - music, voiceover, then all images
     let inputList = `-i ${escapeFilename(
       scriptBackgroundMusic!.name
-    )} -i voiceover.mp3 -i ${escapeFilename(scriptImage!.name)}`;
+    )} -i voiceover.mp3`;
+
+    // Add all background images
+    scriptImages.forEach((image) => {
+      inputList += ` -i ${escapeFilename(image.name)}`;
+    });
+
     if (hasVideoOverlay) {
       inputList += ` -i ${escapeFilename(scriptVideoOverlay!.name)}`;
     }
@@ -2903,26 +2968,48 @@ ${srtContent}`;
                 <div>
                   <Label className="text-sm mb-2 block">Video Assets</Label>
                   <div className="space-y-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        document.getElementById("script-image-input")?.click()
-                      }
-                      className="w-full"
-                    >
-                      {scriptImage && <Check className="w-4 h-4 mr-1" />}
-                      Add Image
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          document.getElementById("script-image-input")?.click()
+                        }
+                        className="flex-1"
+                      >
+                        {scriptImages.length > 0 && (
+                          <Check className="w-4 h-4 mr-1" />
+                        )}
+                        Add Bg{" "}
+                        {scriptImages.length > 0 && `(${scriptImages.length})`}
+                      </Button>
+                      <Button
+                        variant={bgAnimation ? "default" : "outline"}
+                        size="sm"
+                        onClick={() => setBgAnimation(!bgAnimation)}
+                        disabled={scriptImages.length <= 1}
+                        className="px-3"
+                        title={
+                          scriptImages.length <= 1
+                            ? "Upload multiple images to enable animation"
+                            : bgAnimation
+                            ? "Animation On"
+                            : "Animation Off"
+                        }
+                      >
+                        {bgAnimation ? "Anim: On" : "Anim: Off"}
+                      </Button>
+                    </div>
                     <input
                       id="script-image-input"
                       type="file"
                       accept="image/*"
+                      multiple
                       className="hidden"
                       onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setScriptImage(file);
+                        const files = Array.from(e.target.files || []);
+                        if (files.length > 0) {
+                          setScriptImages(files);
                         }
                       }}
                     />
@@ -3055,26 +3142,6 @@ ${srtContent}`;
                         </Button>
 
                         <Button
-                          onClick={handleDownloadAss}
-                          variant="outline"
-                          size="sm"
-                          disabled={affirmationTimings.length === 0}
-                        >
-                          <Download className="w-4 h-4 mr-0.5" />
-                          .ASS
-                        </Button>
-
-                        <Button
-                          onClick={handleDownloadTimestamps}
-                          variant="outline"
-                          size="sm"
-                          disabled={affirmationTimings.length === 0}
-                        >
-                          <Download className="w-4 h-4 mr-0.5" />
-                          Timestamps
-                        </Button>
-
-                        <Button
                           onClick={generateDescription}
                           variant="outline"
                           size="sm"
@@ -3108,7 +3175,7 @@ ${srtContent}`;
                         disabled={
                           isRendering ||
                           !scriptBackgroundMusic ||
-                          !scriptImage ||
+                          scriptImages.length === 0 ||
                           affirmationTimings.length === 0
                         }
                       >

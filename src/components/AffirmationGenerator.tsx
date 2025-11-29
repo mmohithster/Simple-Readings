@@ -595,11 +595,30 @@ Use clear, single-line affirmations.${
         subscribeDuration = await getVideoDuration(scriptSubscribeVideo);
       }
 
+      // Separate videos and images, get durations
+      const videos: Array<{ file: File; duration: number; index: number }> = [];
+      const images: Array<{ file: File; index: number }> = [];
+
+      for (let i = 0; i < scriptImages.length; i++) {
+        const file = scriptImages[i];
+        if (isVideoFile(file)) {
+          const duration = await getVideoDuration(file);
+          videos.push({ file, duration, index: i });
+        } else {
+          images.push({ file, index: i });
+        }
+      }
+
+      const totalVideoDuration = videos.reduce((sum, v) => sum + v.duration, 0);
+
       // Build FFmpeg command
       const ffmpegCommand = buildFFmpegCommand(
         videoDuration,
         voiceoverDuration,
         scriptImages.length,
+        videos,
+        images,
+        totalVideoDuration,
         bgAnimation,
         !!scriptVideoOverlay,
         !!scriptSubscribeVideo,
@@ -683,6 +702,16 @@ Use clear, single-line affirmations.${
   // Helper to check if a word is punctuation (no space before)
   const isPunctuation = (word: string): boolean => {
     return /^[.,!?;:)}\]'""'']+$/.test(word.trim());
+  };
+
+  // Helper to check if a file is a video
+  const isVideoFile = (file: File): boolean => {
+    return file.type.startsWith("video/");
+  };
+
+  // Helper to check if any background file is a video
+  const hasVideoBackground = (): boolean => {
+    return scriptImages.some((file) => isVideoFile(file));
   };
 
   // Generate SRT content from Kokoro word-level timestamps
@@ -1001,7 +1030,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const buildFFmpegCommand = (
     videoDuration: number,
     voiceoverDuration: number,
-    numImages: number,
+    numBgFiles: number,
+    videos: Array<{ file: File; duration: number; index: number }>,
+    images: Array<{ file: File; index: number }>,
+    totalVideoDuration: number,
     enableAnimation: boolean,
     hasVideoOverlay: boolean,
     hasSubscribeVideo: boolean,
@@ -1018,53 +1050,150 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     let filterComplex = "";
     let currentLayer = "img";
-    let nextInputIndex = 2 + numImages; // First index after images
+    let nextInputIndex = 2 + numBgFiles; // First index after background files
+    const crossfadeDuration = 1.0;
 
-    // Handle background images (single or multiple with crossfade)
-    if (numImages === 1) {
-      // Single image: loop for entire duration (existing logic)
-      filterComplex += `[2:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${videoDuration}[img];`;
-    } else {
-      // Multiple images: spread equally with crossfade
-      const crossfadeDuration = 1.0; // 1 second crossfade
-      const segmentDuration = videoDuration / numImages;
+    // Handle background: videos play first, then images spread across remaining time
+    if (videos.length === 0 && images.length === 0) {
+      // No background - shouldn't happen due to validation
+      filterComplex += `color=c=black:s=1920x1080:d=${videoDuration}[img];`;
+    } else if (videos.length > 0 && images.length === 0) {
+      // Only videos: play sequentially or loop single video
+      if (videos.length === 1) {
+        // Single video: loop until video duration is reached
+        const video = videos[0];
+        const numLoops = Math.ceil(videoDuration / video.duration);
+        const inputIndex = 2 + video.index;
 
-      // Scale and prepare all images with proper duration
-      for (let i = 0; i < numImages; i++) {
-        const inputIndex = 2 + i;
-        // Each image needs to be long enough: its segment + crossfade duration
-        const imageDuration =
-          segmentDuration + (i < numImages - 1 ? crossfadeDuration : 0);
+        filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS[vbase];`;
 
-        if (enableAnimation) {
-          // Ken Burns effect: zoom from 1.2x to 1x over the image duration
-          // Use zoompan to create smooth zoom out effect
-          const fps = 30; // frames per second
-          const totalFrames = Math.ceil(imageDuration * fps);
-
-          filterComplex += `[${inputIndex}:v]scale=2304:1296:force_original_aspect_ratio=decrease,pad=2304:1296:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0[scaled${i}];`;
-          filterComplex += `[scaled${i}]zoompan=z='min(1.2-(0.2*on/${totalFrames}),1.2)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps},trim=duration=${imageDuration.toFixed(
-            3
-          )},setpts=PTS-STARTPTS[img${i}];`;
+        if (numLoops > 1) {
+          filterComplex += `[vbase]loop=${numLoops}:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[img];`;
         } else {
-          // No animation: standard scale
-          filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${imageDuration.toFixed(
-            3
-          )},setpts=PTS-STARTPTS[img${i}];`;
+          filterComplex += `[vbase]trim=duration=${videoDuration},setpts=PTS-STARTPTS[img];`;
+        }
+      } else {
+        // Multiple videos: concatenate them sequentially
+        for (let i = 0; i < videos.length; i++) {
+          const inputIndex = 2 + videos[i].index;
+          filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS[v${i}];`;
+        }
+
+        // Concatenate all videos
+        let concatInputs = "";
+        for (let i = 0; i < videos.length; i++) {
+          concatInputs += `[v${i}]`;
+        }
+        filterComplex += `${concatInputs}concat=n=${videos.length}:v=1:a=0[vconcat];`;
+
+        // Loop or trim to match duration
+        if (totalVideoDuration < videoDuration) {
+          const numLoops = Math.ceil(videoDuration / totalVideoDuration);
+          filterComplex += `[vconcat]loop=${numLoops}:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[img];`;
+        } else {
+          filterComplex += `[vconcat]trim=duration=${videoDuration},setpts=PTS-STARTPTS[img];`;
         }
       }
+    } else if (videos.length === 0 && images.length > 0) {
+      // Only images: spread equally with crossfade (existing logic)
+      if (images.length === 1) {
+        // Single image: loop for entire duration
+        const inputIndex = 2 + images[0].index;
+        filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${videoDuration}[img];`;
+      } else {
+        // Multiple images with crossfade
+        const segmentDuration = videoDuration / images.length;
 
-      // Build crossfade chain
-      let previousOutput = "img0";
+        for (let i = 0; i < images.length; i++) {
+          const inputIndex = 2 + images[i].index;
+          const imageDuration =
+            segmentDuration + (i < images.length - 1 ? crossfadeDuration : 0);
 
-      for (let i = 1; i < numImages; i++) {
-        const offsetTime = segmentDuration * i;
-        const outputLabel = i === numImages - 1 ? "img" : `xf${i}`;
+          if (enableAnimation) {
+            const fps = 30;
+            const totalFrames = Math.ceil(imageDuration * fps);
+            filterComplex += `[${inputIndex}:v]scale=2304:1296:force_original_aspect_ratio=decrease,pad=2304:1296:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0[scaled${i}];`;
+            filterComplex += `[scaled${i}]zoompan=z='min(1.2-(0.2*on/${totalFrames}),1.2)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps},trim=duration=${imageDuration.toFixed(
+              3
+            )},setpts=PTS-STARTPTS[img${i}];`;
+          } else {
+            filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${imageDuration.toFixed(
+              3
+            )},setpts=PTS-STARTPTS[img${i}];`;
+          }
+        }
 
-        filterComplex += `[${previousOutput}][img${i}]xfade=transition=fade:duration=${crossfadeDuration}:offset=${offsetTime.toFixed(
-          3
-        )}[${outputLabel}];`;
-        previousOutput = outputLabel;
+        // Build crossfade chain
+        let previousOutput = "img0";
+        for (let i = 1; i < images.length; i++) {
+          const offsetTime = segmentDuration * i;
+          const outputLabel = i === images.length - 1 ? "img" : `xf${i}`;
+          filterComplex += `[${previousOutput}][img${i}]xfade=transition=fade:duration=${crossfadeDuration}:offset=${offsetTime.toFixed(
+            3
+          )}[${outputLabel}];`;
+          previousOutput = outputLabel;
+        }
+      }
+    } else {
+      // Mixed: videos first, then images spread across remaining time
+      // Step 1: Concatenate all videos sequentially
+      for (let i = 0; i < videos.length; i++) {
+        const inputIndex = 2 + videos[i].index;
+        filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS[v${i}];`;
+      }
+
+      let concatInputs = "";
+      for (let i = 0; i < videos.length; i++) {
+        concatInputs += `[v${i}]`;
+      }
+      filterComplex += `${concatInputs}concat=n=${
+        videos.length
+      }:v=1:a=0,trim=duration=${Math.min(
+        totalVideoDuration,
+        videoDuration
+      )},setpts=PTS-STARTPTS[videos];`;
+
+      // Step 2: Prepare images for remaining duration
+      const remainingDuration = Math.max(0, videoDuration - totalVideoDuration);
+
+      if (remainingDuration > 0 && images.length > 0) {
+        const segmentDuration = remainingDuration / images.length;
+
+        for (let i = 0; i < images.length; i++) {
+          const inputIndex = 2 + images[i].index;
+          const imageDuration =
+            segmentDuration + (i < images.length - 1 ? crossfadeDuration : 0);
+
+          if (enableAnimation) {
+            const fps = 30;
+            const totalFrames = Math.ceil(imageDuration * fps);
+            filterComplex += `[${inputIndex}:v]scale=2304:1296:force_original_aspect_ratio=decrease,pad=2304:1296:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0[scaledimg${i}];`;
+            filterComplex += `[scaledimg${i}]zoompan=z='min(1.2-(0.2*on/${totalFrames}),1.2)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps},trim=duration=${imageDuration.toFixed(
+              3
+            )},setpts=PTS-STARTPTS[imgprep${i}];`;
+          } else {
+            filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${imageDuration.toFixed(
+              3
+            )},setpts=PTS-STARTPTS[imgprep${i}];`;
+          }
+        }
+
+        // Build crossfade chain for images
+        let previousOutput = "imgprep0";
+        for (let i = 1; i < images.length; i++) {
+          const offsetTime = segmentDuration * i;
+          const outputLabel = i === images.length - 1 ? "images" : `imgxf${i}`;
+          filterComplex += `[${previousOutput}][imgprep${i}]xfade=transition=fade:duration=${crossfadeDuration}:offset=${offsetTime.toFixed(
+            3
+          )}[${outputLabel}];`;
+          previousOutput = outputLabel;
+        }
+
+        // Step 3: Concatenate videos and images
+        filterComplex += `[videos][images]concat=n=2:v=1:a=0[img];`;
+      } else {
+        // No remaining duration or no images, just use videos
+        filterComplex += `[videos]copy[img];`;
       }
     }
 
@@ -2987,10 +3116,14 @@ ${srtContent}`;
                         variant={bgAnimation ? "default" : "outline"}
                         size="sm"
                         onClick={() => setBgAnimation(!bgAnimation)}
-                        disabled={scriptImages.length <= 1}
+                        disabled={
+                          scriptImages.length <= 1 || hasVideoBackground()
+                        }
                         className="px-3"
                         title={
-                          scriptImages.length <= 1
+                          hasVideoBackground()
+                            ? "Animation not available for videos"
+                            : scriptImages.length <= 1
                             ? "Upload multiple images to enable animation"
                             : bgAnimation
                             ? "Animation On"
@@ -3003,7 +3136,7 @@ ${srtContent}`;
                     <input
                       id="script-image-input"
                       type="file"
-                      accept="image/*"
+                      accept="image/*,video/*"
                       multiple
                       className="hidden"
                       onChange={(e) => {

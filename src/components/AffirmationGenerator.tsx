@@ -77,6 +77,10 @@ const AffirmationGenerator = () => {
     speed: 0.9,
   });
   const [maxCharsPerLine, setMaxCharsPerLine] = useState(30);
+  const [subscribeButtonVerticalPosition, setSubscribeButtonVerticalPosition] =
+    useState(85); // Percentage from top (0-100)
+  const [captionVerticalPosition, setCaptionVerticalPosition] = useState(70); // Percentage from top (0-100)
+  const [subscribeButtonCount, setSubscribeButtonCount] = useState(6); // Number of times to show subscribe button
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -896,20 +900,25 @@ Use clear, single-line affirmations.${
     // Generate ASS file with inline color tag approach
     // Each word timing shows the FULL caption text with inline color overrides
     // Current spoken word = YELLOW, all other words = WHITE
-    // Alignment: 5 = middle-center (horizontally and vertically centered)
+    // Alignment: 2 = bottom-center (horizontally centered, anchored from bottom)
     // Colors: &H00FFFFFF = white text, &H0000FFFF = yellow (BGR format), &H00000000 = black outline
+    // MarginV: vertical margin from bottom in pixels (calculated from percentage)
+    const playResY = 1080;
+    const marginVPixels = Math.round(
+      ((100 - captionVerticalPosition) / 100) * playResY
+    );
     let assContent = `[Script Info]
 ; Word-by-word yellow highlighting with inline color tags
 Title: Affirmations
 ScriptType: v4.00+
 WrapStyle: 0
 PlayResX: 1920
-PlayResY: 1080
+PlayResY: ${playResY}
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: White,Alice Bold,85,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,2,5,10,10,0,1
+Style: White,Alice Bold,85,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,2,2,10,10,${marginVPixels},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -1209,14 +1218,27 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     // Add subtitles on top using ASS file (styling is already defined in the ASS file)
     filterComplex += `[${currentLayer}]ass=subtitles.ass[withsubs];`;
 
-    // Add subscribe video overlay at 6 timestamps if provided
+    // Add subscribe video overlay at dynamically calculated timestamps if provided
     if (hasSubscribeVideo) {
       const subscribeInputIndex = nextInputIndex;
       nextInputIndex++;
 
-      // Target timestamps: 0:00, 4:26, 9:00, 13:00, 18:36, 22:10
-      // In seconds: 0, 266, 540, 780, 1116, 1330
-      const targetTimestamps = [0, 266, 540, 780, 1116, 1330];
+      // Calculate dynamic timestamps based on video duration
+      // Number of times to show subscribe button (from user setting)
+      const subscribeCount = subscribeButtonCount;
+
+      // Calculate available duration (ensure last animation completes fully)
+      const availableDuration = videoDuration - subscribeDuration;
+
+      // Calculate interval between appearances
+      const interval = availableDuration / (subscribeCount - 1);
+
+      // Generate evenly spaced timestamps
+      // First at 0, last positioned so animation completes before video ends
+      const targetTimestamps: number[] = [];
+      for (let i = 0; i < subscribeCount; i++) {
+        targetTimestamps.push(Math.round(i * interval));
+      }
 
       // First, loop the subscribe video so it's available throughout the entire duration
       filterComplex += `[${subscribeInputIndex}:v]loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[loopsub];`;
@@ -1247,8 +1269,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         .join("+");
 
       // Overlay the looped video, only visible during the calculated time windows
-      // Position at 20% from bottom, centered horizontally
-      filterComplex += `[withsubs][loopsub]overlay=x=(W-w)/2:y=H*0.8-h/2:enable='${enableExpr}'[v];`;
+      // Position based on subscribeButtonVerticalPosition setting, centered horizontally
+      const verticalPos = subscribeButtonVerticalPosition / 100;
+      filterComplex += `[withsubs][loopsub]overlay=x=(W-w)/2:y=H*${verticalPos}-h/2:enable='${enableExpr}'[v];`;
     } else {
       // No subscribe video, just pass through
       filterComplex += `[withsubs]copy[v];`;
@@ -3088,6 +3111,59 @@ ${srtContent}`;
                     value={maxCharsPerLine}
                     onChange={(e) =>
                       setMaxCharsPerLine(parseInt(e.target.value))
+                    }
+                  />
+                </div>
+
+                <div>
+                  <Label htmlFor="captionVerticalPos">
+                    Caption Vertical Position (% from top)
+                  </Label>
+                  <Input
+                    id="captionVerticalPos"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={captionVerticalPosition}
+                    onChange={(e) =>
+                      setCaptionVerticalPosition(parseInt(e.target.value))
+                    }
+                  />
+                </div>
+
+                <div>
+                  <Label htmlFor="subscribeButtonVerticalPos">
+                    Subscribe Button Vertical Position (% from top)
+                  </Label>
+                  <Input
+                    id="subscribeButtonVerticalPos"
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="1"
+                    value={subscribeButtonVerticalPosition}
+                    onChange={(e) =>
+                      setSubscribeButtonVerticalPosition(
+                        parseInt(e.target.value)
+                      )
+                    }
+                  />
+                </div>
+
+                <div>
+                  <Label htmlFor="subscribeButtonCount">
+                    Subscribe Button Appearances
+                  </Label>
+                  <Input
+                    id="subscribeButtonCount"
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                    value={subscribeButtonCount}
+                    onChange={(e) =>
+                      setSubscribeButtonCount(parseInt(e.target.value))
                     }
                   />
                 </div>

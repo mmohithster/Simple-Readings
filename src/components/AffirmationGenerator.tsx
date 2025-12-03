@@ -3962,7 +3962,10 @@ Generate a single, detailed image generation prompt that follows the style guide
         },
         body: JSON.stringify({
           prompt: scene.prompt,
-          image_size: "landscape_16_9",
+          image_size: {
+            width: 1920,
+            height: 1080,
+          },
           num_inference_steps: 4,
           num_images: 1,
         }),
@@ -5214,7 +5217,10 @@ Generate a single, detailed image generation prompt that follows the style guide
                                       },
                                       body: JSON.stringify({
                                         prompt: prompt,
-                                        image_size: "landscape_16_9",
+                                        image_size: {
+                                          width: 1920,
+                                          height: 1080,
+                                        },
                                         num_inference_steps: 4,
                                         num_images: 1,
                                       }),

@@ -6,79 +6,67 @@
 
 @layer base {
   :root {
-    --background: 250 100% 98%;
-    --foreground: 240 15% 15%;
+    --background: 0 0% 100%;
+    --foreground: 0 0% 10%;
 
-    --card: 250 50% 96%;
-    --card-foreground: 240 15% 20%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 10%;
 
-    --popover: 250 100% 98%;
-    --popover-foreground: 240 15% 15%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 10%;
 
-    --primary: 280 60% 65%;
-    --primary-foreground: 0 0% 98%;
-    --primary-glow: 280 70% 75%;
+    --primary: 0 0% 10%;
+    --primary-foreground: 0 0% 100%;
+    --primary-glow: 0 0% 10%;
 
-    --secondary: 160 40% 85%;
-    --secondary-foreground: 160 80% 25%;
+    --secondary: 0 0% 100%;
+    --secondary-foreground: 0 0% 10%;
 
-    --muted: 250 30% 92%;
-    --muted-foreground: 240 10% 50%;
+    --muted: 0 0% 100%;
+    --muted-foreground: 0 0% 45%;
 
-    --accent: 200 60% 80%;
-    --accent-foreground: 200 80% 25%;
+    --accent: 0 0% 100%;
+    --accent-foreground: 0 0% 10%;
 
-    --destructive: 0 70% 60%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 250 30% 88%;
-    --input: 250 30% 94%;
-    --ring: 280 60% 65%;
+    --border: 0 0% 85%;
+    --input: 0 0% 100%;
+    --ring: transparent;
 
-    /* Beautiful gradients for peaceful UI */
-    --gradient-primary: linear-gradient(
-      135deg,
-      hsl(280 60% 65%),
-      hsl(280 70% 75%)
-    );
-    --gradient-secondary: linear-gradient(
-      135deg,
-      hsl(160 40% 85%),
-      hsl(200 60% 80%)
-    );
-    --gradient-bg: linear-gradient(180deg, hsl(250 100% 98%), hsl(250 50% 96%));
-    --gradient-card: linear-gradient(
-      145deg,
-      hsl(250 50% 96%),
-      hsl(250 30% 92%)
-    );
+    /* Clean minimal - no gradients */
+    --gradient-primary: hsl(0 0% 10%);
+    --gradient-secondary: hsl(0 0% 100%);
+    --gradient-bg: hsl(0 0% 100%);
+    --gradient-card: hsl(0 0% 100%);
 
-    /* Serene shadows */
-    --shadow-peaceful: 0 10px 30px -10px hsl(280 60% 65% / 0.2);
-    --shadow-glow: 0 0 40px hsl(280 70% 75% / 0.3);
-    --shadow-card: 0 4px 20px hsl(240 15% 15% / 0.08);
+    /* No shadows */
+    --shadow-peaceful: none;
+    --shadow-glow: none;
+    --shadow-card: none;
 
     /* Smooth transitions */
-    --transition-gentle: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-    --transition-bounce: all 0.6s cubic-bezier(0.68, -0.55, 0.265, 1.55);
+    --transition-gentle: all 0.2s ease;
+    --transition-bounce: all 0.3s ease;
 
     --radius: 0.5rem;
 
-    --sidebar-background: 0 0% 98%;
+    --sidebar-background: 0 0% 100%;
 
-    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-foreground: 0 0% 10%;
 
-    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary: 0 0% 10%;
 
-    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-primary-foreground: 0 0% 100%;
 
-    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent: 0 0% 100%;
 
-    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-accent-foreground: 0 0% 10%;
 
-    --sidebar-border: 220 13% 91%;
+    --sidebar-border: 0 0% 85%;
 
-    --sidebar-ring: 217.2 91.2% 59.8%;
+    --sidebar-ring: 0 0% 85%;
   }
 
   .dark {
@@ -184,7 +172,27 @@
   height: 8px;
 }
 
-/* Remove focus outline for backup textarea */
+/* Remove focus outline for all inputs */
+input:focus,
+textarea:focus,
+select:focus,
+button:focus {
+  outline: none !important;
+  ring: 0 !important;
+  --tw-ring-shadow: none !important;
+  box-shadow: none !important;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+button:focus-visible {
+  outline: none !important;
+  ring: 0 !important;
+  --tw-ring-shadow: none !important;
+  box-shadow: none !important;
+}
+
 .no-focus-outline {
   --ring: transparent !important;
 }

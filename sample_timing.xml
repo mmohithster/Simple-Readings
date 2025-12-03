@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Simple Custom XML Format for Image Timings -->
+<!-- This format works with the Videaw affirmation generator -->
+<!-- Times are in seconds -->
+<clips>
+  <clip name="image1.jpg" start="0" end="5.5" />
+  <clip name="image2.jpg" start="5.5" end="12.0" />
+  <clip name="image3.jpg" start="12.0" end="18.5" />
+  <clip name="image4.jpg" start="18.5" end="25.0" />
+  <!-- The last image will automatically extend to the end of the video -->
+</clips>
+
+
+
+
+
+
+

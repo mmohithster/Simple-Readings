@@ -1,4 +1,61 @@
-# Welcome to your Lovable project
+# Videaw - Affirmation Video Generator
+
+An advanced affirmation and meditation video generator with AI-powered script generation, professional voiceover, and customizable video editing features.
+
+## ✨ Features
+
+### 🎬 Video Production
+- **Background Media**: Upload images or videos as backgrounds
+- **XML Timing Support**: ⭐ NEW! Upload XML files to control precise image timing
+  - Supports Final Cut Pro XML (FCPXML)
+  - Supports Adobe Premiere Pro XML
+  - Supports custom simple XML format
+  - Last image automatically extends to video end
+- **Ken Burns Animation**: Optional zoom/pan effects on images
+- **Video Overlays**: Add semi-transparent video overlays
+- **Subscribe Animations**: Customizable subscribe button animations
+
+### 🎤 Audio & Voice
+- **AI Voiceover**: High-quality Kokoro TTS with customizable voices
+- **Background Music**: Add music with auto-ducking and fade-out
+- **Audio Equalizer**: Built-in EQ with presets (Bass Boost, Treble Boost, etc.)
+- **Word-Level Timing**: Precise word-by-word subtitle timing
+
+### 🤖 AI-Powered Script Generation
+- **Multiple AI Providers**: Anthropic Claude, OpenAI, XAI
+- **Script Types**: Affirmations or guided meditations
+- **Custom Prompts**: Generate scripts from your ideas
+- **Length Options**: Short or long format videos
+
+### 🎨 Customization
+- **Caption Positioning**: Control subtitle vertical position
+- **Max Characters Per Line**: Adjust subtitle line length
+- **Speech Speed**: Control voiceover pace
+- **Subscribe Button Placement**: Custom positioning and frequency
+
+### 📊 Advanced Features
+- **Scene Management**: Create and manage multiple scenes with timings
+- **Image Generation**: AI-powered scene image generation (Fal.ai)
+- **Prompt Generation**: Auto-generate image prompts for scenes
+- **Timeline View**: Visual timeline editor for scenes
+
+## 🆕 XML Timing Feature
+
+The XML Timing feature allows you to create perfectly timed video edits by uploading:
+1. Your background images
+2. An XML file with timing information
+
+**Benefits:**
+- Frame-accurate timing control
+- Perfect sync with pre-edited sequences
+- Professional workflow integration (Final Cut Pro, Premiere Pro)
+- Automatic extension of the last image to video end
+
+📖 **See [XML_TIMING_GUIDE.md](XML_TIMING_GUIDE.md) for detailed instructions and examples**
+
+Sample XML files included:
+- `sample_timing.xml` - Simple custom format
+- `sample_fcpxml.xml` - Final Cut Pro format
 
 ## Project info
 

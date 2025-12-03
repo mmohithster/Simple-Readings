@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Final Cut Pro XML Format Example -->
+<!-- This demonstrates FCPXML format support -->
+<!DOCTYPE fcpxml>
+<fcpxml version="1.9">
+  <resources>
+    <format id="r1" name="FFVideoFormat1080p30" frameDuration="100/3000s" width="1920" height="1080"/>
+    <asset id="r2" name="background1.jpg" uid="ABC123" start="0s" hasVideo="1" format="r1" duration="165/30s"/>
+    <asset id="r3" name="background2.jpg" uid="DEF456" start="0s" hasVideo="1" format="r1" duration="195/30s"/>
+    <asset id="r4" name="background3.jpg" uid="GHI789" start="0s" hasVideo="1" format="r1" duration="225/30s"/>
+  </resources>
+  <library>
+    <event name="Sample Project">
+      <project name="Affirmation Video">
+        <sequence format="r1" duration="585/30s">
+          <spine>
+            <asset-clip name="background1.jpg" offset="0/30s" ref="r2" duration="165/30s" format="r1"/>
+            <asset-clip name="background2.jpg" offset="165/30s" ref="r3" duration="195/30s" format="r1"/>
+            <asset-clip name="background3.jpg" offset="360/30s" ref="r4" duration="225/30s" format="r1"/>
+          </spine>
+        </sequence>
+      </project>
+    </event>
+  </library>
+</fcpxml>
+
+
+
+
+
+
+

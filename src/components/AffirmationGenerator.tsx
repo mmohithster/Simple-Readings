@@ -5,6 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Slider } from "@/components/ui/slider";
 import {
   Download,
   Play,
@@ -18,6 +19,7 @@ import {
   Settings,
   Video,
   Check,
+  Loader2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import {
@@ -27,9 +29,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { AudioEqualizer } from "@/components/AudioEqualizer";
+import JSZip from "jszip";
 
 interface VoiceSettings {
   model: string;
@@ -39,24 +49,14 @@ interface VoiceSettings {
 
 const AffirmationGenerator = () => {
   const [affirmations, setAffirmations] = useState("");
-  const [a4fApiKey, setA4fApiKey] = useState(() => {
-    // Load API key from localStorage on component mount
-    return localStorage.getItem("a4f-api-key") || "";
-  });
   const [selectedModel, setSelectedModel] = useState(() => {
     return localStorage.getItem("selected-model") || "provider-6/gpt-4.1";
   });
   const [selectedProvider, setSelectedProvider] = useState(() => {
-    return localStorage.getItem("selected-provider") || "https://api.a4f.co/v1";
+    return localStorage.getItem("selected-provider") || "";
   });
   const [selectedProviderType, setSelectedProviderType] = useState(() => {
-    return localStorage.getItem("selected-provider-type") || "a4f";
-  });
-  const [openRouterApiKey, setOpenRouterApiKey] = useState(() => {
-    return localStorage.getItem("openrouter-api-key") || "";
-  });
-  const [openRouterModel, setOpenRouterModel] = useState(() => {
-    return localStorage.getItem("openrouter-model") || "openai/gpt-4o";
+    return localStorage.getItem("selected-provider-type") || "anthropic";
   });
   const [anthropicApiKey, setAnthropicApiKey] = useState(() => {
     return localStorage.getItem("anthropic-api-key") || "";
@@ -70,11 +70,23 @@ const AffirmationGenerator = () => {
     }
     return savedModel || "claude-sonnet-4-20250514";
   });
+  const [xaiApiKey, setXaiApiKey] = useState(() => {
+    return localStorage.getItem("xai-api-key") || "";
+  });
+  const [promptModel, setPromptModel] = useState<"anthropic" | "xai">(() => {
+    return (
+      (localStorage.getItem("prompt-model") as "anthropic" | "xai") ||
+      "anthropic"
+    );
+  });
+  const [falAiApiKey, setFalAiApiKey] = useState(() => {
+    return localStorage.getItem("fal-ai-api-key") || "";
+  });
   const [lastApiCall, setLastApiCall] = useState(0);
   const [voiceSettings, setVoiceSettings] = useState<VoiceSettings>({
     model: "kokoro",
-    voice: "af_bella(3)+af_v0nicole(6)+af_kore(1)",
-    speed: 0.9,
+    voice: "af_bella(3)+af_v0nicole(5)+af_kore(1)+af_river(1)",
+    speed: 1.0,
   });
   const [maxCharsPerLine, setMaxCharsPerLine] = useState(30);
   const [subscribeButtonVerticalPosition, setSubscribeButtonVerticalPosition] =
@@ -85,6 +97,17 @@ const AffirmationGenerator = () => {
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
   const [progress, setProgress] = useState(0);
   const [generatedAudio, setGeneratedAudio] = useState<string | null>(null);
+  const [isGeneratingImages, setIsGeneratingImages] = useState(false);
+  const [generatingPromptForScene, setGeneratingPromptForScene] = useState<
+    number | null
+  >(null);
+  const [generatingImageForScene, setGeneratingImageForScene] = useState<
+    number | null
+  >(null);
+  const [imageGenerationProgress, setImageGenerationProgress] = useState({
+    current: 0,
+    total: 0,
+  });
 
   const [affirmationTimings, setAffirmationTimings] = useState<
     Array<{
@@ -112,6 +135,13 @@ const AffirmationGenerator = () => {
   const [bgAnimation, setBgAnimation] = useState(false);
   const [scriptBackgroundMusic, setScriptBackgroundMusic] =
     useState<File | null>(null);
+  // XML-based timing feature
+  const [xmlTimedImages, setXmlTimedImages] = useState<File[]>([]);
+  const [xmlTimingFile, setXmlTimingFile] = useState<File | null>(null);
+  const [parsedXmlTimings, setParsedXmlTimings] = useState<
+    Array<{ imageName: string; start: number; end: number }>
+  >([]);
+  const [xmlTimingAnimation, setXmlTimingAnimation] = useState(false);
   const [scriptVideoOverlay, setScriptVideoOverlay] = useState<File | null>(
     null
   );
@@ -119,6 +149,27 @@ const AffirmationGenerator = () => {
     null
   );
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
+  // Scene count: using flexible ranges that prioritize equal scene lengths
+  // Stop 1: 50, Stop 2: 90-110, Stop 3: 110-150,
+  // Stop 4: 150-200, Stop 5: 200-250
+  // Store slider position (0-4) and calculate optimal scene count dynamically
+  const [sceneSliderPosition, setSceneSliderPosition] = useState<number>(0);
+  const [showAdvancedSettings, setShowAdvancedSettings] = useState(false);
+  const [showGenerateScenesDialog, setShowGenerateScenesDialog] =
+    useState(false);
+  const [scenePrompt, setScenePrompt] = useState("");
+  const [scenes, setScenes] = useState<
+    Array<{
+      text: string;
+      prompt: string;
+      imageUrl: string | null;
+      startTime?: number;
+      endTime?: number;
+      hasTimestamp?: boolean;
+    }>
+  >([]);
+  const [generatedPrompts, setGeneratedPrompts] = useState<string[]>([]);
+  const [generatedImages, setGeneratedImages] = useState<string[]>([]);
 
   // Render server states
   const [renderServerUrl, setRenderServerUrl] = useState(() => {
@@ -139,16 +190,7 @@ const AffirmationGenerator = () => {
   const [audioLoading, setAudioLoading] = useState(false);
   const [showSampleDialog, setShowSampleDialog] = useState(false);
 
-  // Image generation states
-  const [bgImagePrompt, setBgImagePrompt] = useState("");
-  const [bgImageLoading, setBgImageLoading] = useState(false);
-  const [generatedBgImage, setGeneratedBgImage] = useState<string | null>(null);
-
-  const [thumbnailPrompt, setThumbnailPrompt] = useState("");
-  const [thumbnailLoading, setThumbnailLoading] = useState(false);
-  const [generatedThumbnail, setGeneratedThumbnail] = useState<string | null>(
-    null
-  );
+  // Image generation states (removed - placeholder for future features)
 
   // Image modal states
   const [showImageModal, setShowImageModal] = useState(false);
@@ -171,6 +213,251 @@ const AffirmationGenerator = () => {
   const [autoApplyEQ, setAutoApplyEQ] = useState(false);
 
   const { toast } = useToast();
+
+  // Scene count ranges - flexible ranges that allow wiggle room
+  const sceneCountRanges = [
+    { min: 50, max: 50 }, // Stop 1: exactly 50
+    { min: 90, max: 110 }, // Stop 2: 90-110 range
+    { min: 110, max: 150 }, // Stop 3: 110-150 range
+    { min: 150, max: 200 }, // Stop 4: 150-200 range
+    { min: 200, max: 250 }, // Stop 5: 200-250 range
+  ] as const;
+
+  // Calculate optimal scene count within range based on script structure
+  // Prioritizes equal scene lengths - finds count that creates most uniform scenes
+  const calculateOptimalSceneCount = (
+    script: string,
+    sliderPosition: number
+  ): number => {
+    const range = sceneCountRanges[sliderPosition] || sceneCountRanges[0];
+
+    if (range.min === range.max) {
+      // Fixed number (stop 1)
+      return range.min;
+    }
+
+    if (!script.trim()) {
+      return range.min;
+    }
+
+    // Count total words in script
+    const totalWords = script
+      .trim()
+      .split(/\s+/)
+      .filter((w) => w.length > 0).length;
+
+    if (totalWords === 0) {
+      return range.min;
+    }
+
+    // Find the count that results in the most equal word distribution
+    // We want scenes with similar word counts (equal lengths)
+    let bestCount = range.min;
+    let bestEvenness = 0;
+
+    for (let count = range.min; count <= range.max; count++) {
+      const wordsPerScene = totalWords / count;
+
+      // Calculate how "even" this division would be
+      // More even = scenes are closer to the average
+      // We measure evenness by how close wordsPerScene is to being a round number
+      // This indicates scenes can be more uniformly sized
+      const roundWordsPerScene = Math.round(wordsPerScene);
+      const evenness =
+        1 - Math.abs(wordsPerScene - roundWordsPerScene) / wordsPerScene;
+
+      if (evenness > bestEvenness) {
+        bestEvenness = evenness;
+        bestCount = count;
+      }
+    }
+
+    return bestCount;
+  };
+
+  // Function to divide script into scenes
+  const divideIntoScenes = (
+    script: string,
+    numberOfScenes: number
+  ): string[] => {
+    if (!script.trim()) return [];
+
+    // Split by sentences (ending with . , ? or !) - never cut within a sentence
+    // Use regex to split on sentence boundaries, but NOT on decimal points (e.g., 14.5, 3.6)
+    // Negative lookbehind ensures period is not preceded by digit
+    // Negative lookahead ensures period is not followed by digit
+    const sentenceRegex = /(?<!\d)[.,!?]+(?!\d)(?=\s|$)/g;
+    const sentences: string[] = [];
+    let lastIndex = 0;
+    let match;
+
+    // Find all sentence endings (excluding decimal points)
+    while ((match = sentenceRegex.exec(script)) !== null) {
+      const sentenceEnd = match.index + match[0].length;
+      const sentence = script.substring(lastIndex, sentenceEnd).trim();
+      if (sentence) {
+        sentences.push(sentence);
+      }
+      lastIndex = sentenceEnd;
+    }
+
+    // Add any remaining text as the last sentence (if no ending punctuation)
+    const remaining = script.substring(lastIndex).trim();
+    if (remaining) {
+      sentences.push(remaining);
+    }
+
+    if (sentences.length === 0) return [];
+
+    // Count words in each sentence
+    const sentencesWithWordCount = sentences.map((sentence) => ({
+      text: sentence,
+      words: sentence.split(/\s+/).filter((w) => w.length > 0).length,
+    }));
+
+    // Calculate total words
+    const totalWords = sentencesWithWordCount.reduce(
+      (sum, sentence) => sum + sentence.words,
+      0
+    );
+
+    if (totalWords === 0) {
+      // If no words, return empty scenes
+      return Array(numberOfScenes).fill("");
+    }
+
+    // Calculate target words per scene for equal distribution
+    const targetWordsPerScene = totalWords / numberOfScenes;
+
+    const scenes: string[] = [];
+    let currentScene: string[] = [];
+    let currentSceneWordCount = 0;
+
+    // Process each sentence sequentially, prioritizing equal lengths
+    for (let i = 0; i < sentencesWithWordCount.length; i++) {
+      const sentence = sentencesWithWordCount[i];
+      const isLastSentence = i === sentencesWithWordCount.length - 1;
+      const scenesRemaining = numberOfScenes - scenes.length;
+      const sentencesRemaining = sentencesWithWordCount.length - i;
+
+      // Add sentence to current scene
+      currentScene.push(sentence.text);
+      currentSceneWordCount += sentence.words;
+
+      // Calculate remaining words and target for remaining scenes
+      const wordsUsedSoFar =
+        scenes.reduce((sum, scene) => {
+          return sum + scene.split(/\s+/).filter((w) => w.length > 0).length;
+        }, 0) + currentSceneWordCount;
+      const wordsRemaining = totalWords - wordsUsedSoFar;
+
+      // Dynamic target: remaining words divided by remaining scenes
+      // This ensures equal distribution
+      const dynamicTarget =
+        scenesRemaining > 0 ? wordsRemaining / scenesRemaining : 0;
+
+      // Determine if we should close this scene
+      let shouldCloseScene = false;
+
+      if (scenes.length === numberOfScenes - 1) {
+        // This is the last scene - add all remaining sentences
+        shouldCloseScene = isLastSentence;
+      } else if (sentencesRemaining === scenesRemaining) {
+        // Exactly enough sentences for remaining scenes - one sentence per scene
+        shouldCloseScene = true;
+      } else if (
+        currentSceneWordCount >= dynamicTarget * 0.8 && // Allow 20% flexibility
+        currentScene.length > 0
+      ) {
+        // Close scene when we're close to the target (with flexibility)
+        // This prioritizes equal lengths over exact word counts
+        shouldCloseScene = true;
+      }
+
+      if (shouldCloseScene) {
+        scenes.push(currentScene.join(" "));
+        currentScene = [];
+        currentSceneWordCount = 0;
+      }
+    }
+
+    // Add any remaining sentences as the last scene
+    if (currentScene.length > 0) {
+      scenes.push(currentScene.join(" "));
+    }
+
+    // If we have fewer scenes than target, split longest scenes to maintain equal lengths
+    while (scenes.length < numberOfScenes && scenes.length > 0) {
+      const longestIndex = scenes.reduce(
+        (maxIdx, scene, idx, arr) =>
+          scene.length > arr[maxIdx].length ? idx : maxIdx,
+        0
+      );
+      const longestScene = scenes[longestIndex];
+
+      // Try to split by sentences (look for sentence endings, but not decimal points)
+      // Use regex that excludes decimal points (periods between digits)
+      const sentenceEndings = longestScene.match(/(?<!\d)[.!?]+(?!\d)/g);
+      if (sentenceEndings && sentenceEndings.length > 1) {
+        // Split at sentence boundaries (excluding decimal points)
+        const parts = longestScene.split(/((?<!\d)[.!?]+(?!\d)\s*)/);
+        const sentencesInScene: string[] = [];
+        let currentSentence = "";
+
+        for (let i = 0; i < parts.length; i++) {
+          currentSentence += parts[i];
+          // Check if this part is a sentence ending (not a decimal point)
+          if (parts[i] && /(?<!\d)[.!?]+(?!\d)/.test(parts[i])) {
+            sentencesInScene.push(currentSentence.trim());
+            currentSentence = "";
+          }
+        }
+        if (currentSentence.trim()) {
+          sentencesInScene.push(currentSentence.trim());
+        }
+
+        if (sentencesInScene.length > 1) {
+          const mid = Math.ceil(sentencesInScene.length / 2);
+          scenes[longestIndex] = sentencesInScene.slice(0, mid).join(" ");
+          scenes.splice(
+            longestIndex + 1,
+            0,
+            sentencesInScene.slice(mid).join(" ")
+          );
+        } else {
+          // Can't split further, add empty scene
+          scenes.push("");
+        }
+      } else {
+        // Can't split further, add empty scene
+        scenes.push("");
+      }
+    }
+
+    // If we have too many, merge the smallest scenes
+    while (scenes.length > numberOfScenes) {
+      const smallestIndex = scenes.reduce(
+        (minIdx, scene, idx, arr) =>
+          scene.length < arr[minIdx].length ? idx : minIdx,
+        0
+      );
+
+      if (smallestIndex < scenes.length - 1) {
+        scenes[smallestIndex] =
+          scenes[smallestIndex] + " " + scenes[smallestIndex + 1];
+        scenes.splice(smallestIndex + 1, 1);
+      } else if (smallestIndex > 0) {
+        scenes[smallestIndex - 1] =
+          scenes[smallestIndex - 1] + " " + scenes[smallestIndex];
+        scenes.splice(smallestIndex, 1);
+      } else {
+        // Can't merge, break to avoid infinite loop
+        break;
+      }
+    }
+
+    return scenes;
+  };
 
   // Rate limiting function for API calls
   const checkRateLimit = () => {
@@ -218,34 +505,9 @@ const AffirmationGenerator = () => {
     }
   };
 
-  const sampleAffirmations = `I am worthy of all the love, success, and happiness that flows into my life.
-My mind is clear, focused, and ready to create miracles today.
-I attract abundance in all areas of my life effortlessly.
-I am confident in my ability to overcome any challenge that comes my way.
-Every breath I take fills me with positive energy and vitality.
-I am grateful for this beautiful day and all the blessings it brings.
-My body is healthy, strong, and full of life.
-Success flows to me naturally and easily.
-I am in perfect alignment with my highest purpose.
-My dreams are becoming my reality right now.
-I choose peace over worry, love over fear.
-I am surrounded by supportive and loving people.
-My creativity flows freely and inspires others.
-I trust the process of life and know everything unfolds perfectly.`;
-
   const generateScript = async (title: string, date: string) => {
-    const apiKey =
-      selectedProviderType === "a4f"
-        ? a4fApiKey
-        : selectedProviderType === "anthropic"
-        ? anthropicApiKey
-        : openRouterApiKey;
-    const apiKeyName =
-      selectedProviderType === "a4f"
-        ? "A4F"
-        : selectedProviderType === "anthropic"
-        ? "Anthropic"
-        : "OpenRouter";
+    const apiKey = promptModel === "anthropic" ? anthropicApiKey : xaiApiKey;
+    const apiKeyName = promptModel === "anthropic" ? "Anthropic" : "X AI";
 
     if (!apiKey.trim()) {
       toast({
@@ -258,183 +520,61 @@ I trust the process of life and know everything unfolds perfectly.`;
 
     setIsGeneratingScript(true);
 
-    // Check rate limit for OpenRouter
-    if (selectedProviderType === "openrouter" && !checkRateLimit()) {
-      setIsGeneratingScript(false);
-      return;
-    }
-
-    // Check rate limit for Anthropic (same as OpenRouter)
-    if (selectedProviderType === "anthropic" && !checkRateLimit()) {
+    // Check rate limit for Anthropic
+    if (promptModel === "anthropic" && !checkRateLimit()) {
       setIsGeneratingScript(false);
       return;
     }
 
     try {
-      let completion;
+      // Use custom prompt if provided, otherwise use default based on script type
+      let prompt = customPrompt.trim();
 
-      if (selectedProviderType === "a4f") {
-        const a4fClient = new OpenAI({
-          apiKey: a4fApiKey,
-          baseURL: selectedProvider,
-          dangerouslyAllowBrowser: true,
-        });
-
-        // Use custom prompt if provided, otherwise use default based on script type
-        let prompt = customPrompt.trim();
-
-        if (!prompt) {
-          if (scriptType === "affirmation") {
-            const affirmationCount = affirmationLength === "long" ? 130 : 15;
-            prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
+      if (!prompt) {
+        if (scriptType === "affirmation") {
+          const affirmationCount = affirmationLength === "long" ? 130 : 15;
+          prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
 Use clear, single-line affirmations.${
-              date
-                ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
-                : ""
-            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
-          } else {
-            prompt = `Write a (1500-1800) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
-          }
+            date
+              ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
+              : ""
+          } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. Do not write the Title at the top before affirmations start, No abbreviations like "eg", instead use the word example: IMPORTANT!`;
+        } else {
+          prompt = `Write a (3500-4000) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
         }
+      }
 
-        // Replace placeholders in the prompt
-        let finalPrompt = prompt
-          .replace(/\${title}/g, title)
-          .replace(/\${date}/g, date)
-          .replace(
-            /\${transcript}/g,
-            transcript ? cleanTranscript(transcript) : ""
-          );
+      // Replace placeholders in the prompt
+      let finalPrompt = prompt
+        .replace(/\${title}/g, title)
+        .replace(/\${date}/g, date)
+        .replace(
+          /\${transcript}/g,
+          transcript ? cleanTranscript(transcript) : ""
+        );
 
-        // Add transcript reference if provided
-        if (transcript.trim()) {
-          const cleanedTranscript = cleanTranscript(transcript);
-          finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
-        }
-
-        completion = await a4fClient.chat.completions.create({
-          model: selectedModel,
-          messages: [{ role: "user", content: finalPrompt }],
-          temperature: 0.7,
-          max_tokens: 4000,
-          stream: true,
-        });
-      } else if (selectedProviderType === "anthropic") {
-        const anthropicClient = new Anthropic({
-          apiKey: anthropicApiKey,
-          dangerouslyAllowBrowser: true,
-        });
-
-        // Use custom prompt if provided, otherwise use default based on script type
-        let prompt = customPrompt.trim();
-
-        if (!prompt) {
-          if (scriptType === "affirmation") {
-            const affirmationCount = affirmationLength === "long" ? 130 : 15;
-            prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations.
-Use clear, single-line affirmations.${
-              date
-                ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
-                : ""
-            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. Do not write the Title at the top before affirmations start, No abbreviations like "eg", instead use the word example: IMPORTANT!`;
-          } else {
-            prompt = `Write a (3500-4000) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
-          }
-        }
-
-        // Replace placeholders in the prompt
-        let finalPrompt = prompt
-          .replace(/\${title}/g, title)
-          .replace(/\${date}/g, date)
-          .replace(
-            /\${transcript}/g,
-            transcript ? cleanTranscript(transcript) : ""
-          );
-
-        // Add transcript reference if provided
-        if (transcript.trim()) {
-          const cleanedTranscript = cleanTranscript(transcript);
-          finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
-        }
-
-        completion = await anthropicClient.messages.create({
-          model: anthropicModel,
-          max_tokens: 4000,
-          messages: [{ role: "user", content: finalPrompt }],
-          stream: true,
-        });
-      } else {
-        // OpenRouter API call using OpenAI SDK (like your working app)
-        // Use custom prompt if provided, otherwise use default based on script type
-        let prompt = customPrompt.trim();
-
-        if (!prompt) {
-          if (scriptType === "affirmation") {
-            const affirmationCount = affirmationLength === "long" ? 130 : 15;
-            prompt = `I want you to write ${affirmationCount} Affirmations that covers all aspects of life, titled "${title}". This script should be designed for a YouTube audience interested in listening to Affirmations. Use clear, single-line affirmations.${
-              date
-                ? ` Some affirmations should mention the "${date}". It certainly need to be included in the very first affirmation.`
-                : ""
-            } Don't provide unwanted narrator, music, and such words in the actual script? I want something that I can just pass on to my voiceover artist: IMPORTANT! If a transcript is provided, use it ONLY for context and inspiration - create completely original affirmations. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
-          } else {
-            prompt = `Write a (1500-1800) words long meditation script. Write in a manner to consider where ever pause is required. separate it as separate line or sentence. Make sure it is ready for narration no distractions like narrator or music etc should be used in the script. If a transcript is provided, use it ONLY for context and inspiration - create completely original meditation content. Do not copy the transcript's style or content. Do not use subheadings within the script or * (asterics) in the script. Avoid using "—" in the script. No bracketed content. No abbreviations like "eg", instead use the word example: IMPORTANT!`;
-          }
-        }
-
-        // Replace placeholders in the prompt
-        let finalPrompt = prompt
-          .replace(/\${title}/g, title)
-          .replace(/\${date}/g, date)
-          .replace(
-            /\${transcript}/g,
-            transcript ? cleanTranscript(transcript) : ""
-          );
-
-        // Add transcript reference if provided
-        if (transcript.trim()) {
-          const cleanedTranscript = cleanTranscript(transcript);
-          finalPrompt += `\n\nReference transcript for context only (use as inspiration, but create original content):\n${cleanedTranscript}`;
-        }
-
-        const apiCall = async () => {
-          const openRouterClient = new OpenAI({
-            baseURL: "https://openrouter.ai/api/v1",
-            apiKey: openRouterApiKey,
-            defaultHeaders: {
-              "HTTP-Referer": window.location.origin,
-              "X-Title": "Affirmation Audio Weaver",
-            },
-            dangerouslyAllowBrowser: true,
-          });
-
-          return await openRouterClient.chat.completions.create({
-            model: openRouterModel,
-            messages: [
-              {
-                role: "user",
-                content: finalPrompt,
-              },
-            ],
-            temperature: 0.7,
-            max_tokens: 4000,
-            stream: true,
-          });
-        };
-
-        completion = await retryOpenRouterCall(apiCall);
+      // Add transcript reference if provided
+      if (transcript.trim()) {
+        const cleanedTranscript = cleanTranscript(transcript);
+        finalPrompt += `\n\nReference transcript for context and style (each line represents a natural pause or individual affirmation):\n${cleanedTranscript}`;
       }
 
       // Handle streaming response
       let generatedScript = "";
 
-      if (selectedProviderType === "a4f") {
-        // Handle A4F streaming
-        for await (const chunk of completion) {
-          const content = chunk.choices[0]?.delta?.content || "";
-          generatedScript += content;
-          setAffirmations(generatedScript);
-        }
-      } else if (selectedProviderType === "anthropic") {
+      if (promptModel === "anthropic") {
+        const anthropicClient = new Anthropic({
+          apiKey: anthropicApiKey,
+          dangerouslyAllowBrowser: true,
+        });
+
+        const completion = await anthropicClient.messages.create({
+          model: anthropicModel,
+          max_tokens: 4000,
+          messages: [{ role: "user", content: finalPrompt }],
+          stream: true,
+        });
+
         // Handle Anthropic streaming
         for await (const chunk of completion) {
           if (
@@ -446,12 +586,55 @@ Use clear, single-line affirmations.${
             setAffirmations(generatedScript);
           }
         }
-      } else {
-        // Handle OpenRouter streaming
-        for await (const chunk of completion) {
-          const content = chunk.choices[0]?.delta?.content || "";
-          generatedScript += content;
-          setAffirmations(generatedScript);
+      } else if (promptModel === "xai") {
+        // Xai API call with CORS
+        const response = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          mode: "cors",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${xaiApiKey}`,
+          },
+          body: JSON.stringify({
+            model: "grok-4-0709",
+            messages: [{ role: "user", content: finalPrompt }],
+            max_tokens: 4000,
+            stream: true,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Xai API error: ${response.statusText}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+          throw new Error("No response body");
+        }
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+
+          for (const line of lines) {
+            if (line.startsWith("data: ") && line !== "data: [DONE]") {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.choices?.[0]?.delta?.content) {
+                  const content = data.choices[0].delta.content;
+                  generatedScript += content;
+                  setAffirmations(generatedScript);
+                }
+              } catch (e) {
+                // Skip invalid JSON
+              }
+            }
+          }
         }
       }
 
@@ -485,18 +668,8 @@ Use clear, single-line affirmations.${
   };
 
   const handleGenerateScript = () => {
-    const apiKey =
-      selectedProviderType === "a4f"
-        ? a4fApiKey
-        : selectedProviderType === "anthropic"
-        ? anthropicApiKey
-        : openRouterApiKey;
-    const apiKeyName =
-      selectedProviderType === "a4f"
-        ? "A4F"
-        : selectedProviderType === "anthropic"
-        ? "Anthropic"
-        : "OpenRouter";
+    const apiKey = anthropicApiKey;
+    const apiKeyName = "Anthropic";
 
     if (!apiKey.trim()) {
       toast({
@@ -505,15 +678,6 @@ Use clear, single-line affirmations.${
         variant: "destructive",
       });
       return;
-    }
-
-    // Debug OpenRouter connection
-    if (selectedProviderType === "openrouter") {
-      console.log("OpenRouter Debug Info:", {
-        apiKeyLength: openRouterApiKey.length,
-        model: openRouterModel,
-        hasApiKey: !!openRouterApiKey.trim(),
-      });
     }
 
     setShowScriptDialog(true);
@@ -558,11 +722,26 @@ Use clear, single-line affirmations.${
       return;
     }
 
-    if (scriptImages.length === 0) {
+    // Check if we have either regular images or XML-timed images
+    const hasRegularImages = scriptImages.length > 0;
+    const hasXmlImages = xmlTimedImages.length > 0 && xmlTimingFile !== null;
+
+    if (!hasRegularImages && !hasXmlImages) {
       toast({
         title: "Missing Background",
         description:
           "Please add at least one background image to render the video.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // If using XML timing, validate that we have both images and XML
+    if (xmlTimedImages.length > 0 && !xmlTimingFile) {
+      toast({
+        title: "Missing XML File",
+        description:
+          "You uploaded images for XML timing but no XML file. Please upload the XML timing file.",
         variant: "destructive",
       });
       return;
@@ -599,46 +778,92 @@ Use clear, single-line affirmations.${
         subscribeDuration = await getVideoDuration(scriptSubscribeVideo);
       }
 
-      // Separate videos and images, get durations
-      const videos: Array<{ file: File; duration: number; index: number }> = [];
-      const images: Array<{ file: File; index: number }> = [];
+      // Check if we're using XML timing
+      const usingXmlTiming = hasXmlImages && parsedXmlTimings.length > 0;
 
-      for (let i = 0; i < scriptImages.length; i++) {
-        const file = scriptImages[i];
-        if (isVideoFile(file)) {
-          const duration = await getVideoDuration(file);
-          videos.push({ file, duration, index: i });
-        } else {
-          images.push({ file, index: i });
-        }
-      }
-
-      const totalVideoDuration = videos.reduce((sum, v) => sum + v.duration, 0);
-
-      // Build FFmpeg command
-      const ffmpegCommand = buildFFmpegCommand(
-        videoDuration,
-        voiceoverDuration,
-        scriptImages.length,
-        videos,
-        images,
-        totalVideoDuration,
-        bgAnimation,
-        !!scriptVideoOverlay,
-        !!scriptSubscribeVideo,
-        subscribeDuration
-      );
-
-      // Prepare form data
+      let ffmpegCommand: string;
       const formData = new FormData();
-      formData.append("ffmpeg_command", ffmpegCommand);
-      formData.append("files", scriptBackgroundMusic);
-      formData.append("files", voiceoverFile);
 
-      // Add all background images
-      scriptImages.forEach((image) => {
-        formData.append("files", image);
-      });
+      if (usingXmlTiming) {
+        // Build FFmpeg command for XML timing (with or without animation)
+        ffmpegCommand = buildXmlTimingFFmpegCommand(
+          videoDuration,
+          voiceoverDuration,
+          !!scriptVideoOverlay,
+          !!scriptSubscribeVideo,
+          subscribeDuration,
+          xmlTimingAnimation,
+          xmlTimedImages,
+          parsedXmlTimings
+        );
+
+        formData.append("ffmpeg_command", ffmpegCommand);
+        formData.append("files", scriptBackgroundMusic);
+        formData.append("files", voiceoverFile);
+
+        // Only upload concat.txt when animation is disabled (concat demuxer needs it)
+        if (!xmlTimingAnimation) {
+          const concatContent = generateConcatFile(
+            xmlTimedImages,
+            parsedXmlTimings,
+            videoDuration
+          );
+
+          const concatBlob = new Blob([concatContent], { type: "text/plain" });
+          const concatFile = new File([concatBlob], "concat.txt", {
+            type: "text/plain",
+          });
+          formData.append("files", concatFile);
+        }
+
+        // Add all XML-timed images
+        xmlTimedImages.forEach((image) => {
+          formData.append("files", image);
+        });
+      } else {
+        // Regular timing: Use existing logic
+        const videos: Array<{ file: File; duration: number; index: number }> =
+          [];
+        const images: Array<{ file: File; index: number }> = [];
+
+        for (let i = 0; i < scriptImages.length; i++) {
+          const file = scriptImages[i];
+          if (isVideoFile(file)) {
+            const duration = await getVideoDuration(file);
+            videos.push({ file, duration, index: i });
+          } else {
+            images.push({ file, index: i });
+          }
+        }
+
+        const totalVideoDuration = videos.reduce(
+          (sum, v) => sum + v.duration,
+          0
+        );
+
+        // Build FFmpeg command
+        ffmpegCommand = buildFFmpegCommand(
+          videoDuration,
+          voiceoverDuration,
+          scriptImages.length,
+          videos,
+          images,
+          totalVideoDuration,
+          bgAnimation,
+          !!scriptVideoOverlay,
+          !!scriptSubscribeVideo,
+          subscribeDuration
+        );
+
+        formData.append("ffmpeg_command", ffmpegCommand);
+        formData.append("files", scriptBackgroundMusic);
+        formData.append("files", voiceoverFile);
+
+        // Add all background images
+        scriptImages.forEach((image) => {
+          formData.append("files", image);
+        });
+      }
 
       // Add video overlay if provided
       if (scriptVideoOverlay) {
@@ -1036,6 +1261,411 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     return bestCutPoint;
   };
 
+  // Helper to escape filenames
+  const escapeFilename = (filename: string): string => {
+    if (
+      filename.includes(" ") ||
+      filename.includes("(") ||
+      filename.includes(")")
+    ) {
+      return `"${filename.replace(/"/g, '\\"')}"`;
+    }
+    return filename;
+  };
+
+  // Generate concat file for XML-based timing
+  const generateConcatFile = (
+    images: File[],
+    timings: Array<{ imageName: string; start: number; end: number }>,
+    videoDuration: number
+  ): string => {
+    let content = "";
+
+    // Match images to timings by filename
+    const matchedTimings: Array<{ file: File; duration: number }> = [];
+
+    images.forEach((imageFile) => {
+      const imgNameLower = imageFile.name
+        .toLowerCase()
+        .replace(/\.[^/.]+$/, "");
+
+      // Find matching timing
+      const timing = timings.find((t) => {
+        const xmlNameLower = t.imageName.toLowerCase().replace(/\.[^/.]+$/, "");
+        return (
+          xmlNameLower === imgNameLower ||
+          xmlNameLower.includes(imgNameLower) ||
+          imgNameLower.includes(xmlNameLower)
+        );
+      });
+
+      if (timing) {
+        matchedTimings.push({
+          file: imageFile,
+          duration: timing.end - timing.start,
+        });
+      }
+    });
+
+    // Sort by timing order
+    const sorted = matchedTimings.sort((a, b) => {
+      const aIdx = timings.findIndex((t) => {
+        const aNameLower = a.file.name.toLowerCase().replace(/\.[^/.]+$/, "");
+        const tNameLower = t.imageName.toLowerCase().replace(/\.[^/.]+$/, "");
+        return (
+          tNameLower === aNameLower ||
+          tNameLower.includes(aNameLower) ||
+          aNameLower.includes(tNameLower)
+        );
+      });
+      const bIdx = timings.findIndex((t) => {
+        const bNameLower = b.file.name.toLowerCase().replace(/\.[^/.]+$/, "");
+        const tNameLower = t.imageName.toLowerCase().replace(/\.[^/.]+$/, "");
+        return (
+          tNameLower === bNameLower ||
+          tNameLower.includes(bNameLower) ||
+          bNameLower.includes(tNameLower)
+        );
+      });
+      return aIdx - bIdx;
+    });
+
+    // Extend last image to video end
+    if (sorted.length > 0) {
+      const lastIdx = sorted.length - 1;
+      const lastTiming = timings[lastIdx];
+      sorted[lastIdx].duration = videoDuration - lastTiming.start;
+    }
+
+    // Generate concat format
+    sorted.forEach((item, idx) => {
+      content += `file '${item.file.name}'\n`;
+      content += `duration ${item.duration.toFixed(3)}\n`;
+      // Add file again for last frame
+      if (idx === sorted.length - 1) {
+        content += `file '${item.file.name}'\n`;
+      }
+    });
+
+    return content;
+  };
+
+  // Build FFmpeg command for XML timing (concat demuxer or concat filter with animation)
+  const buildXmlTimingFFmpegCommand = (
+    videoDuration: number,
+    voiceoverDuration: number,
+    hasVideoOverlay: boolean,
+    hasSubscribeVideo: boolean,
+    subscribeDuration: number,
+    enableAnimation: boolean,
+    images: File[],
+    timings: Array<{ imageName: string; start: number; end: number }>
+  ): string => {
+    let filterComplex = "";
+    let inputIndex = 0;
+
+    // Build inputs list - using -stream_loop for overlays instead of filter loop (much more memory efficient)
+    let inputs = "";
+
+    // Input 0: background music
+    inputs += ` -i ${escapeFilename(scriptBackgroundMusic!.name)}`;
+    const musicIdx = inputIndex++;
+
+    // Input 1: voiceover
+    inputs += ` -i voiceover.mp3`;
+    const voiceIdx = inputIndex++;
+
+    // Match images to timings for animation processing
+    const matchedTimings: Array<{
+      file: File;
+      duration: number;
+      index: number;
+    }> = [];
+    images.forEach((imageFile, imgIdx) => {
+      const imgNameLower = imageFile.name
+        .toLowerCase()
+        .replace(/\.[^/.]+$/, "");
+
+      const timing = timings.find((t) => {
+        const xmlNameLower = t.imageName.toLowerCase().replace(/\.[^/.]+$/, "");
+        return (
+          xmlNameLower === imgNameLower ||
+          xmlNameLower.includes(imgNameLower) ||
+          imgNameLower.includes(xmlNameLower)
+        );
+      });
+
+      if (timing) {
+        matchedTimings.push({
+          file: imageFile,
+          duration: timing.end - timing.start,
+          index: imgIdx,
+        });
+      }
+    });
+
+    // Sort by timing order
+    const sorted = matchedTimings.sort((a, b) => {
+      const aIdx = timings.findIndex((t) => {
+        const aNameLower = a.file.name.toLowerCase().replace(/\.[^/.]+$/, "");
+        const tNameLower = t.imageName.toLowerCase().replace(/\.[^/.]+$/, "");
+        return (
+          tNameLower === aNameLower ||
+          tNameLower.includes(aNameLower) ||
+          aNameLower.includes(tNameLower)
+        );
+      });
+      const bIdx = timings.findIndex((t) => {
+        const bNameLower = b.file.name.toLowerCase().replace(/\.[^/.]+$/, "");
+        const tNameLower = t.imageName.toLowerCase().replace(/\.[^/.]+$/, "");
+        return (
+          tNameLower === bNameLower ||
+          tNameLower.includes(bNameLower) ||
+          bNameLower.includes(tNameLower)
+        );
+      });
+      return aIdx - bIdx;
+    });
+
+    // Extend last image to video end
+    if (sorted.length > 0) {
+      const lastTiming = timings[sorted.length - 1];
+      sorted[sorted.length - 1].duration = videoDuration - lastTiming.start;
+    }
+
+    let concatIdx = -1;
+    let currentLayer = "";
+
+    if (enableAnimation && sorted.length > 0) {
+      // Animation enabled: Process each image individually with zoompan, then concat
+      const fps = 30;
+      let imageInputIndex = inputIndex;
+
+      // Add all image inputs
+      sorted.forEach((item) => {
+        inputs += ` -i ${escapeFilename(item.file.name)}`;
+      });
+
+      // Process each image with zoompan based on its duration
+      sorted.forEach((item, idx) => {
+        const imageInputIdx = imageInputIndex + idx;
+        const totalFrames = Math.ceil(item.duration * fps);
+
+        // Scale up for zoom effect, then apply zoompan
+        filterComplex += `[${imageInputIdx}:v]scale=2304:1296:force_original_aspect_ratio=decrease,pad=2304:1296:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0[scaled${idx}];`;
+        filterComplex += `[scaled${idx}]zoompan=z='min(1.2-(0.2*on/${totalFrames}),1.2)':d=${totalFrames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1920x1080:fps=${fps},trim=duration=${item.duration.toFixed(
+          3
+        )},setpts=PTS-STARTPTS[img${idx}];`;
+      });
+
+      // Concatenate all processed images
+      const concatInputs = sorted.map((_, idx) => `[img${idx}]`).join("");
+      filterComplex += `${concatInputs}concat=n=${sorted.length}:v=1:a=0[img];`;
+      currentLayer = "img";
+      inputIndex += sorted.length;
+    } else {
+      // No animation: Use concat demuxer (more efficient)
+      inputs += ` -f concat -safe 0 -i concat.txt`;
+      concatIdx = inputIndex++;
+      filterComplex += `[${concatIdx}:v]fps=30,scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,setpts=PTS-STARTPTS[img];`;
+      currentLayer = "img";
+    }
+
+    // Input indices for overlays (after images)
+    let overlayIdx = -1;
+    if (hasVideoOverlay) {
+      inputs += ` -stream_loop -1 -i ${escapeFilename(
+        scriptVideoOverlay!.name
+      )}`;
+      overlayIdx = inputIndex++;
+    }
+
+    let subscribeIdx = -1;
+    if (hasSubscribeVideo) {
+      inputs += ` -stream_loop -1 -i ${escapeFilename(
+        scriptSubscribeVideo!.name
+      )}`;
+      subscribeIdx = inputIndex++;
+    }
+
+    // Add video overlay if provided (using stream_loop input, no memory-heavy loop filter needed)
+    if (hasVideoOverlay && overlayIdx >= 0) {
+      filterComplex += `[${overlayIdx}:v]scale=1920:1080:force_original_aspect_ratio=decrease,format=yuva420p,colorchannelmixer=aa=0.3,trim=duration=${videoDuration},setpts=PTS-STARTPTS[overlay];`;
+      filterComplex += `[${currentLayer}][overlay]overlay=format=auto[withoverlay];`;
+      currentLayer = "withoverlay";
+    }
+
+    // Add subtitles
+    filterComplex += `[${currentLayer}]ass=subtitles.ass[withsubs];`;
+    currentLayer = "withsubs";
+
+    // Add subscribe video if provided (using stream_loop input)
+    if (hasSubscribeVideo && subscribeIdx >= 0) {
+      const subscribeCount = subscribeButtonCount;
+      const availableDuration = videoDuration - subscribeDuration;
+      const interval = availableDuration / (subscribeCount - 1);
+      const targetTimestamps: number[] = [];
+      for (let i = 0; i < subscribeCount; i++) {
+        targetTimestamps.push(Math.round(i * interval));
+      }
+
+      // No loop filter needed - stream_loop handles the looping at input level
+      filterComplex += `[${subscribeIdx}:v]trim=duration=${videoDuration},setpts=PTS-STARTPTS[loopsub];`;
+
+      const timeWindows = targetTimestamps.map((target) => {
+        const offsetInCycle = target % subscribeDuration;
+        const adjustedStart = target - offsetInCycle;
+        const adjustedEnd = Math.min(
+          adjustedStart + subscribeDuration,
+          videoDuration
+        );
+        return { start: adjustedStart, end: adjustedEnd };
+      });
+
+      const enableExpr = timeWindows
+        .map(
+          ({ start, end }) => `between(t,${start.toFixed(3)},${end.toFixed(3)})`
+        )
+        .join("+");
+
+      const verticalPos = subscribeButtonVerticalPosition / 100;
+      filterComplex += `[${currentLayer}][loopsub]overlay=x=(W-w)/2:y=H*${verticalPos}-h/2:enable='${enableExpr}'[v];`;
+    } else {
+      filterComplex += `[${currentLayer}]copy[v];`;
+    }
+
+    // Audio processing
+    filterComplex += `[${voiceIdx}:a]volume=15dB[vo];`;
+    filterComplex += `[${musicIdx}:a]atrim=0:${videoDuration},volume=-2dB,afade=t=out:st=${voiceoverDuration}:d=2[bg];`;
+    filterComplex += `[bg][vo]amix=inputs=2:duration=longest:dropout_transition=2[a]`;
+
+    // Build command with memory-efficient settings
+    // -threads 0: auto-detect optimal thread count
+    // Using h264_nvenc for GPU acceleration
+    const command = `ffmpeg${inputs} -filter_complex "${filterComplex}" -map "[v]" -map "[a]" -c:v h264_nvenc -preset fast -b:v 5M -c:a aac -b:a 192k -vsync cfr -r 30 -t ${videoDuration} output.mp4`;
+
+    return command;
+  };
+
+  // Parse XML timing file for image timings
+  const parseXmlForTimings = async (
+    xmlFile: File
+  ): Promise<Array<{ imageName: string; start: number; end: number }>> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const xmlText = e.target?.result as string;
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+
+          const timings: Array<{
+            imageName: string;
+            start: number;
+            end: number;
+          }> = [];
+
+          // Parse simple custom XML format
+          const customClips = xmlDoc.getElementsByTagName("clip");
+          if (customClips.length > 0) {
+            Array.from(customClips).forEach((clip) => {
+              const name = clip.getAttribute("name") || "";
+              const start = parseFloat(clip.getAttribute("start") || "0");
+              const end = parseFloat(clip.getAttribute("end") || "0");
+              timings.push({ imageName: name, start, end });
+            });
+          }
+
+          // Parse FCPXML format
+          const fcpClips = xmlDoc.getElementsByTagName("asset-clip");
+          if (fcpClips.length > 0 && timings.length === 0) {
+            Array.from(fcpClips).forEach((clip) => {
+              const offset = clip.getAttribute("offset") || "0s";
+              const duration = clip.getAttribute("duration") || "0s";
+              const name = clip.getAttribute("name") || "";
+
+              const parseTime = (timeStr: string): number => {
+                const match = timeStr.match(/(\d+)\/(\d+)s/);
+                if (match) return parseFloat(match[1]) / parseFloat(match[2]);
+                const directMatch = timeStr.match(/(\d+(?:\.\d+)?)s/);
+                if (directMatch) return parseFloat(directMatch[1]);
+                return parseFloat(timeStr);
+              };
+
+              const start = parseTime(offset);
+              const dur = parseTime(duration);
+              timings.push({ imageName: name, start, end: start + dur });
+            });
+          }
+
+          // Parse XMEML format (Final Cut Pro 7 / Premiere Pro XML)
+          const premiereClips = xmlDoc.getElementsByTagName("clipitem");
+          if (premiereClips.length > 0 && timings.length === 0) {
+            // Get timebase from sequence level if available
+            let defaultTimebase = 30;
+            const sequenceRate = xmlDoc
+              .getElementsByTagName("sequence")[0]
+              ?.getElementsByTagName("rate")[0]
+              ?.getElementsByTagName("timebase")[0]?.textContent;
+            if (sequenceRate) {
+              defaultTimebase = parseInt(sequenceRate);
+            }
+
+            Array.from(premiereClips).forEach((clip) => {
+              const startElement = clip.getElementsByTagName("start")[0];
+              const endElement = clip.getElementsByTagName("end")[0];
+
+              if (startElement && endElement) {
+                // Try to get name from clipitem directly first, then from file element
+                let name =
+                  clip.getElementsByTagName("name")[0]?.textContent || "";
+
+                // If name not found at clip level, try file element
+                if (!name) {
+                  const fileElement = clip.getElementsByTagName("file")[0];
+                  if (fileElement) {
+                    name =
+                      fileElement.getElementsByTagName("name")[0]
+                        ?.textContent || "";
+                  }
+                }
+
+                const start = parseInt(startElement.textContent || "0");
+                const end = parseInt(endElement.textContent || "0");
+
+                // Get timebase from clip or use default
+                const timebaseElement = clip
+                  .getElementsByTagName("rate")[0]
+                  ?.getElementsByTagName("timebase")[0];
+                const frameRate = timebaseElement
+                  ? parseInt(
+                      timebaseElement.textContent || String(defaultTimebase)
+                    )
+                  : defaultTimebase;
+
+                if (name) {
+                  timings.push({
+                    imageName: name,
+                    start: start / frameRate,
+                    end: end / frameRate,
+                  });
+                }
+              }
+            });
+          }
+
+          timings.sort((a, b) => a.start - b.start);
+          resolve(timings);
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      reader.onerror = () => reject(new Error("Failed to read XML file"));
+      reader.readAsText(xmlFile);
+    });
+  };
+
   const buildFFmpegCommand = (
     videoDuration: number,
     voiceoverDuration: number,
@@ -1110,7 +1740,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         const inputIndex = 2 + images[0].index;
         filterComplex += `[${inputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,loop=loop=-1:size=1:start=0,trim=duration=${videoDuration}[img];`;
       } else {
-        // Multiple images with crossfade
+        // Multiple images with equal distribution and crossfade (original logic)
         const segmentDuration = videoDuration / images.length;
 
         for (let i = 0; i < images.length; i++) {
@@ -1210,7 +1840,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     if (hasVideoOverlay) {
       const overlayInputIndex = nextInputIndex;
       nextInputIndex++;
-      filterComplex += `[${overlayInputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,format=yuva420p,colorchannelmixer=aa=0.3,loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[overlay];`;
+      // Video overlay looping is handled by -stream_loop on input (more memory efficient)
+      filterComplex += `[${overlayInputIndex}:v]scale=1920:1080:force_original_aspect_ratio=decrease,format=yuva420p,colorchannelmixer=aa=0.3,trim=duration=${videoDuration},setpts=PTS-STARTPTS[overlay];`;
       filterComplex += `[img][overlay]overlay=format=auto[withoverlay];`;
       currentLayer = "withoverlay";
     }
@@ -1240,8 +1871,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         targetTimestamps.push(Math.round(i * interval));
       }
 
-      // First, loop the subscribe video so it's available throughout the entire duration
-      filterComplex += `[${subscribeInputIndex}:v]loop=-1:32767:0,trim=duration=${videoDuration},setpts=PTS-STARTPTS[loopsub];`;
+      // Process the subscribe video - looping is handled by -stream_loop on input (more memory efficient)
+      filterComplex += `[${subscribeInputIndex}:v]trim=duration=${videoDuration},setpts=PTS-STARTPTS[loopsub];`;
 
       // For each target timestamp, find where in the animation loop it falls
       // and adjust to show complete animation cycles
@@ -1310,10 +1941,16 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     });
 
     if (hasVideoOverlay) {
-      inputList += ` -i ${escapeFilename(scriptVideoOverlay!.name)}`;
+      // Use -stream_loop -1 for memory-efficient infinite looping (re-reads file instead of buffering)
+      inputList += ` -stream_loop -1 -i ${escapeFilename(
+        scriptVideoOverlay!.name
+      )}`;
     }
     if (hasSubscribeVideo) {
-      inputList += ` -i ${escapeFilename(scriptSubscribeVideo!.name)}`;
+      // Use -stream_loop -1 for memory-efficient infinite looping (re-reads file instead of buffering)
+      inputList += ` -stream_loop -1 -i ${escapeFilename(
+        scriptSubscribeVideo!.name
+      )}`;
     }
 
     // Build full command - try GPU encoding with h264_nvenc
@@ -1457,18 +2094,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   };
 
   const generateDescription = async () => {
-    const apiKey =
-      selectedProviderType === "a4f"
-        ? a4fApiKey
-        : selectedProviderType === "anthropic"
-        ? anthropicApiKey
-        : openRouterApiKey;
-    const apiKeyName =
-      selectedProviderType === "a4f"
-        ? "A4F"
-        : selectedProviderType === "anthropic"
-        ? "Anthropic"
-        : "OpenRouter";
+    const apiKey = promptModel === "anthropic" ? anthropicApiKey : xaiApiKey;
+    const apiKeyName = promptModel === "anthropic" ? "Anthropic" : "X AI";
 
     if (!apiKey.trim()) {
       toast({
@@ -1500,116 +2127,39 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     setIsGeneratingDescription(true);
 
-    // Check rate limit for OpenRouter
-    if (selectedProviderType === "openrouter" && !checkRateLimit()) {
-      setIsGeneratingDescription(false);
-      return;
-    }
-
-    // Check rate limit for Anthropic (same as OpenRouter)
-    if (selectedProviderType === "anthropic" && !checkRateLimit()) {
+    // Check rate limit for Anthropic
+    if (promptModel === "anthropic" && !checkRateLimit()) {
       setIsGeneratingDescription(false);
       return;
     }
 
     try {
-      let completion;
+      // Create content from affirmations for the prompt
+      const srtContent = affirmationTimings
+        .map((timing) => timing.text)
+        .join("\n");
 
-      if (selectedProviderType === "a4f") {
-        const a4fClient = new OpenAI({
-          apiKey: a4fApiKey,
-          baseURL: selectedProvider,
-          dangerouslyAllowBrowser: true,
-        });
-
-        // Create content from affirmations for the prompt
-        const srtContent = affirmationTimings
-          .map((timing) => timing.text)
-          .join("\n");
-
-        const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
+      const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
 
 SRT Content:
 ${srtContent}`;
 
-        completion = await a4fClient.chat.completions.create({
-          model: selectedModel,
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.7,
-          max_tokens: 500,
-          stream: true,
-        });
-      } else if (selectedProviderType === "anthropic") {
+      // Handle streaming response for description
+      let generatedDescription = "";
+
+      if (promptModel === "anthropic") {
         const anthropicClient = new Anthropic({
           apiKey: anthropicApiKey,
           dangerouslyAllowBrowser: true,
         });
 
-        // Create content from affirmations for the prompt
-        const srtContent = affirmationTimings
-          .map((timing) => timing.text)
-          .join("\n");
-
-        const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
-
-SRT Content:
-${srtContent}`;
-
-        completion = await anthropicClient.messages.create({
+        const completion = await anthropicClient.messages.create({
           model: anthropicModel,
           max_tokens: 500,
           messages: [{ role: "user", content: prompt }],
           stream: true,
         });
-      } else {
-        // OpenRouter API call for description using OpenAI SDK
-        const srtContent = affirmationTimings
-          .map((timing) => timing.text)
-          .join("\n");
 
-        const prompt = `Write me a short SEO Optimized Description (3-4 lines only) for this Youtube video based on the srt file. The title is "${savedScriptTitle}". Start with the exact title. Follow that with 3 SEO optimized keywords hashtags for the video and follow that with the same keywords without hashtag and separated by comma.
-
-SRT Content:
-${srtContent}`;
-
-        const apiCall = async () => {
-          const openRouterClient = new OpenAI({
-            baseURL: "https://openrouter.ai/api/v1",
-            apiKey: openRouterApiKey,
-            defaultHeaders: {
-              "HTTP-Referer": window.location.origin,
-              "X-Title": "Affirmation Audio Weaver",
-            },
-            dangerouslyAllowBrowser: true,
-          });
-
-          return await openRouterClient.chat.completions.create({
-            model: openRouterModel,
-            messages: [
-              {
-                role: "user",
-                content: prompt,
-              },
-            ],
-            temperature: 0.7,
-            max_tokens: 500,
-            stream: true,
-          });
-        };
-
-        completion = await retryOpenRouterCall(apiCall);
-      }
-
-      // Handle streaming response for description
-      let generatedDescription = "";
-
-      if (selectedProviderType === "a4f") {
-        // Handle A4F streaming
-        for await (const chunk of completion) {
-          const content = chunk.choices[0]?.delta?.content || "";
-          generatedDescription += content;
-        }
-      } else if (selectedProviderType === "anthropic") {
         // Handle Anthropic streaming
         for await (const chunk of completion) {
           if (
@@ -1620,11 +2170,54 @@ ${srtContent}`;
             generatedDescription += content;
           }
         }
-      } else {
-        // Handle OpenRouter streaming
-        for await (const chunk of completion) {
-          const content = chunk.choices[0]?.delta?.content || "";
-          generatedDescription += content;
+      } else if (promptModel === "xai") {
+        // Xai API call with CORS
+        const response = await fetch("https://api.x.ai/v1/chat/completions", {
+          method: "POST",
+          mode: "cors",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${xaiApiKey}`,
+          },
+          body: JSON.stringify({
+            model: "grok-4-0709",
+            messages: [{ role: "user", content: prompt }],
+            max_tokens: 500,
+            stream: true,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Xai API error: ${response.statusText}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+
+        if (!reader) {
+          throw new Error("No response body");
+        }
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split("\n");
+
+          for (const line of lines) {
+            if (line.startsWith("data: ") && line !== "data: [DONE]") {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.choices?.[0]?.delta?.content) {
+                  const content = data.choices[0].delta.content;
+                  generatedDescription += content;
+                }
+              } catch (e) {
+                // Skip invalid JSON
+              }
+            }
+          }
         }
       }
 
@@ -1660,117 +2253,7 @@ ${srtContent}`;
     }
   };
 
-  const generateBackgroundImage = async () => {
-    if (!a4fApiKey.trim()) {
-      toast({
-        title: "API Key Required",
-        description: "Please enter your A4F API key to generate images.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!bgImagePrompt.trim()) {
-      toast({
-        title: "Prompt Required",
-        description: "Please enter a prompt for the background image.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setBgImageLoading(true);
-
-    try {
-      const a4fClient = new OpenAI({
-        apiKey: a4fApiKey,
-        baseURL: selectedProvider,
-        dangerouslyAllowBrowser: true,
-      });
-
-      const response = await a4fClient.images.generate({
-        model: "provider-3/FLUX.1-dev",
-        prompt: bgImagePrompt,
-        n: 1,
-        size: "1792x1024", // 16:9 ratio
-        quality: "standard",
-      });
-
-      if (response.data && response.data[0] && response.data[0].url) {
-        setGeneratedBgImage(response.data[0].url);
-        toast({
-          title: "Background Image Generated!",
-          description: "Your background image is ready.",
-        });
-      }
-    } catch (error) {
-      console.error("Background image generation failed:", error);
-      toast({
-        title: "Generation Failed",
-        description:
-          "Failed to generate background image. Please check your API key and try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setBgImageLoading(false);
-    }
-  };
-
-  const generateThumbnail = async () => {
-    if (!a4fApiKey.trim()) {
-      toast({
-        title: "API Key Required",
-        description: "Please enter your A4F API key to generate images.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    if (!thumbnailPrompt.trim()) {
-      toast({
-        title: "Prompt Required",
-        description: "Please enter a prompt for the thumbnail.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setThumbnailLoading(true);
-
-    try {
-      const a4fClient = new OpenAI({
-        apiKey: a4fApiKey,
-        baseURL: selectedProvider,
-        dangerouslyAllowBrowser: true,
-      });
-
-      const response = await a4fClient.images.generate({
-        model: "provider-3/FLUX.1-dev",
-        prompt: thumbnailPrompt,
-        n: 1,
-        size: "1792x1024", // 16:9 ratio
-        quality: "standard",
-      });
-
-      if (response.data && response.data[0] && response.data[0].url) {
-        setGeneratedThumbnail(response.data[0].url);
-        toast({
-          title: "Thumbnail Generated!",
-          description: "Your thumbnail is ready.",
-        });
-      }
-    } catch (error) {
-      console.error("Thumbnail generation failed:", error);
-      toast({
-        title: "Generation Failed",
-        description:
-          "Failed to generate thumbnail. Please check your API key and try again.",
-        variant: "destructive",
-      });
-    } finally {
-      setThumbnailLoading(false);
-    }
-  };
+  // Functions removed - placeholder for future features
 
   const downloadImage = async (imageUrl: string, filename: string) => {
     try {
@@ -2364,6 +2847,11 @@ ${srtContent}`;
           description: "Your affirmation audio is ready for download.",
         });
       }
+
+      // Map timestamps to scenes if scenes exist
+      if (scenes.length > 0) {
+        setTimeout(() => mapTimestampsToScenes(), 100);
+      }
     } catch (error) {
       console.error("Generation failed:", error);
       toast({
@@ -2612,6 +3100,836 @@ ${srtContent}`;
     return JSON.stringify(timestampData, null, 2);
   };
 
+  // Map word-level timestamps to scenes
+  // Improved logic based on ParagraphProcessor for better decimal point and punctuation handling
+  const mapTimestampsToScenes = (scenesToMap?: typeof scenes) => {
+    const scenesToProcess = scenesToMap || scenes;
+    if (affirmationTimings.length === 0 || scenesToProcess.length === 0) {
+      return;
+    }
+
+    // Collect all word-level timestamps from affirmationTimings
+    const allWords: Array<{ word: string; start: number; end: number }> = [];
+
+    for (const timing of affirmationTimings) {
+      if (timing.words && timing.words.length > 0) {
+        allWords.push(...timing.words);
+      }
+    }
+
+    if (allWords.length === 0) {
+      toast({
+        title: "No Word Timestamps",
+        description: "No word-level timestamps available for mapping",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Normalize a single word (for word-by-word comparison)
+    // Remove punctuation but preserve numbers (including decimals)
+    const normalizeWord = (word: string) => {
+      return word
+        .toLowerCase()
+        .replace(/[.,!?;:()\[\]"']/g, "") // Remove punctuation but keep numbers
+        .trim();
+    };
+
+    // Build normalized word sequence from timestamps (ONCE, outside the loop)
+    const timestampWords: Array<{
+      word: string;
+      normalized: string;
+      start: number;
+      end: number;
+      index: number;
+    }> = allWords.map((w, idx) => ({
+      word: w.word,
+      normalized: normalizeWord(w.word),
+      start: w.start,
+      end: w.end,
+      index: idx,
+    }));
+
+    // Track current position in timestamp array (prevents re-matching and allows sequential matching)
+    let currentWordIndex = 0;
+
+    // Map each scene to timestamps
+    const updatedScenes = scenesToProcess.map((scene, sceneIndex) => {
+      // Split scene text into words (preserve original text structure)
+      const sceneText = scene.text.trim();
+      const sceneWords = sceneText.split(/\s+/);
+
+      if (sceneWords.length === 0) {
+        return {
+          ...scene,
+          hasTimestamp: false,
+        };
+      }
+
+      // Try to find matching sequence starting from current position
+      let bestMatch = { startWordIdx: -1, endWordIdx: -1, score: 0 };
+
+      // Search for the scene starting from where we left off
+      for (
+        let startIdx = currentWordIndex;
+        startIdx < timestampWords.length;
+        startIdx++
+      ) {
+        let matchedWords = 0;
+        let sceneWordIdx = 0;
+        let wordIdx = startIdx;
+
+        // Try to match all words in the scene
+        while (
+          sceneWordIdx < sceneWords.length &&
+          wordIdx < timestampWords.length
+        ) {
+          const sentenceWord = sceneWords[sceneWordIdx];
+          const timestampWord = timestampWords[wordIdx].word;
+
+          // Normalize both words for comparison (remove punctuation)
+          const normalizedSentenceWord = normalizeWord(sentenceWord);
+          const normalizedTimestampWord = timestampWords[wordIdx].normalized;
+
+          if (normalizedSentenceWord === normalizedTimestampWord) {
+            matchedWords++;
+            sceneWordIdx++;
+            wordIdx++;
+          } else if (normalizedTimestampWord === "") {
+            // Skip punctuation-only words in timestamp data
+            wordIdx++;
+          } else if (normalizedSentenceWord === "") {
+            // Skip empty words in scene
+            sceneWordIdx++;
+          } else {
+            // No match, break
+            break;
+          }
+        }
+
+        // Calculate match score
+        const score =
+          sceneWords.length > 0 ? matchedWords / sceneWords.length : 0;
+
+        // If we have a good match (>70%), use it (similar to ParagraphProcessor)
+        if (score > 0.7 && score > bestMatch.score) {
+          bestMatch = {
+            startWordIdx: startIdx,
+            endWordIdx: wordIdx - 1,
+            score: score,
+          };
+
+          // If it's a very good match (>90%), stop searching
+          if (score > 0.9) {
+            break;
+          }
+        }
+
+        // Don't search too far ahead (limit search window)
+        if (startIdx - currentWordIndex > 50) {
+          break;
+        }
+      }
+
+      if (bestMatch.startWordIdx !== -1 && bestMatch.endWordIdx !== -1) {
+        // Get the timestamps for this scene
+        const startTime = timestampWords[bestMatch.startWordIdx].start;
+        const endTime = timestampWords[bestMatch.endWordIdx].end;
+
+        // Update search position for next scene
+        currentWordIndex = bestMatch.endWordIdx + 1;
+
+        const matchedWords = timestampWords
+          .slice(bestMatch.startWordIdx, bestMatch.endWordIdx + 1)
+          .map((w) => w.word)
+          .join(" ");
+
+        console.log(
+          `✓ Matched scene ${sceneIndex + 1}: "${scene.text.substring(
+            0,
+            40
+          )}..."\n` +
+            `  to "${matchedWords.substring(0, 40)}..." \n` +
+            `  Score: ${(bestMatch.score * 100).toFixed(1)}% | ` +
+            `  Time: ${startTime.toFixed(3)}s - ${endTime.toFixed(3)}s`
+        );
+
+        return {
+          ...scene,
+          startTime,
+          endTime,
+          hasTimestamp: true,
+        };
+      }
+
+      console.warn(
+        `✗ Could not find match for scene ${
+          sceneIndex + 1
+        }: "${scene.text.substring(0, 50)}..."`
+      );
+
+      return {
+        ...scene,
+        hasTimestamp: false,
+      };
+    });
+
+    setScenes(updatedScenes);
+
+    const matchedCount = updatedScenes.filter((s) => s.hasTimestamp).length;
+    toast({
+      title: "Timestamps Mapped",
+      description: `${matchedCount} of ${scenesToProcess.length} scenes matched with timestamps`,
+    });
+  };
+
+  // Generate XMEML timeline for Premiere Pro
+  const generateXMEML = (): string => {
+    const frameRate = 30;
+    const width = 1920;
+    const height = 1080;
+
+    // Collect all scenes with images and timestamps
+    const allClips = scenes
+      .map((scene, index) => ({
+        scene,
+        filename: `scene-${String(index + 1).padStart(4, "0")}.jpg`,
+        index,
+      }))
+      .filter(
+        (clip) =>
+          clip.scene.imageUrl &&
+          clip.scene.startTime !== undefined &&
+          clip.scene.endTime !== undefined
+      );
+
+    if (allClips.length === 0) {
+      return "";
+    }
+
+    // Calculate adjusted start and end frames to fill gaps
+    const adjustedClips: Array<{
+      scene: (typeof scenes)[0];
+      filename: string;
+      index: number;
+      startFrame: number;
+      endFrame: number;
+      duration: number;
+    }> = [];
+
+    for (let idx = 0; idx < allClips.length; idx++) {
+      const clip = allClips[idx];
+      let startFrame: number;
+      let endFrame: number;
+
+      // First clip starts at frame 0
+      if (idx === 0) {
+        startFrame = 0;
+      } else {
+        // Each subsequent clip starts where the previous one ended
+        startFrame = adjustedClips[idx - 1].endFrame;
+      }
+
+      // End frame: either extends to next clip's start or to its natural end
+      if (idx < allClips.length - 1) {
+        // Extend to where next clip's audio starts
+        const nextStartFrame = Math.floor(
+          allClips[idx + 1].scene.startTime! * frameRate
+        );
+        endFrame = nextStartFrame;
+      } else {
+        // Last clip: use its natural end time
+        endFrame = Math.ceil(clip.scene.endTime! * frameRate);
+      }
+
+      // Ensure at least 1 frame duration
+      if (endFrame <= startFrame) {
+        endFrame = startFrame + 1;
+      }
+
+      adjustedClips.push({
+        ...clip,
+        startFrame,
+        endFrame,
+        duration: endFrame - startFrame,
+      });
+    }
+
+    // Calculate total duration from the last clip
+    const totalDuration = adjustedClips[adjustedClips.length - 1].endFrame;
+
+    // Generate clip nodes for the timeline with file definitions INSIDE
+    const clipNodes = adjustedClips
+      .map((clip, idx) => {
+        return `          <clipitem id="clipitem-${idx + 1}">
+            <name>${clip.filename}</name>
+            <duration>${clip.duration}</duration>
+            <rate>
+              <timebase>${frameRate}</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+            <start>${clip.startFrame}</start>
+            <end>${clip.endFrame}</end>
+            <in>0</in>
+            <out>${clip.duration}</out>
+            <file id="file-${idx + 1}">
+              <name>${clip.filename}</name>
+              <pathurl>file://localhost/${clip.filename}</pathurl>
+              <rate>
+                <timebase>${frameRate}</timebase>
+                <ntsc>FALSE</ntsc>
+              </rate>
+              <duration>${clip.duration}</duration>
+              <media>
+                <video>
+                  <samplecharacteristics>
+                    <width>${width}</width>
+                    <height>${height}</height>
+                  </samplecharacteristics>
+                </video>
+              </media>
+            </file>
+          </clipitem>`;
+      })
+      .join("\n");
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE xmeml>
+<xmeml version="5">
+  <sequence id="sequence-1">
+    <name>Script Timeline</name>
+    <duration>${totalDuration}</duration>
+    <rate>
+      <timebase>${frameRate}</timebase>
+      <ntsc>FALSE</ntsc>
+    </rate>
+    <timecode>
+      <rate>
+        <timebase>${frameRate}</timebase>
+        <ntsc>FALSE</ntsc>
+      </rate>
+      <string>00:00:00:00</string>
+      <frame>0</frame>
+      <displayformat>NDF</displayformat>
+    </timecode>
+    <media>
+      <video>
+        <format>
+          <samplecharacteristics>
+            <width>1920</width>
+            <height>1080</height>
+            <pixelaspectratio>square</pixelaspectratio>
+            <rate>
+              <timebase>${frameRate}</timebase>
+              <ntsc>FALSE</ntsc>
+            </rate>
+          </samplecharacteristics>
+        </format>
+        <track>
+${clipNodes}
+        </track>
+      </video>
+    </media>
+  </sequence>
+</xmeml>`;
+
+    return xml;
+  };
+
+  // Download all images as ZIP
+  const downloadAllImages = async () => {
+    const allImages = scenes.filter((scene) => scene.imageUrl);
+
+    if (allImages.length === 0) {
+      toast({
+        title: "No Images",
+        description: "No images to download!",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: "Preparing Download",
+      description: `Preparing ${allImages.length} images for download...`,
+    });
+
+    try {
+      const zip = new JSZip();
+
+      // Helper function to convert image to JPG (much smaller than PNG)
+      const convertImageToJPG = async (imageUrl: string): Promise<Blob> => {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+
+          img.onload = () => {
+            try {
+              // Create canvas with image dimensions
+              const canvas = document.createElement("canvas");
+              canvas.width = img.naturalWidth || img.width;
+              canvas.height = img.naturalHeight || img.height;
+
+              const ctx = canvas.getContext("2d");
+              if (!ctx) {
+                reject(new Error("Failed to get canvas context"));
+                return;
+              }
+
+              // Fill with white background (for transparency handling)
+              ctx.fillStyle = "#FFFFFF";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+              // Draw image on canvas
+              ctx.drawImage(img, 0, 0);
+
+              // Convert canvas to blob (JPEG format - much smaller file size)
+              canvas.toBlob(
+                (blob) => {
+                  if (blob) {
+                    resolve(blob);
+                  } else {
+                    reject(new Error("Failed to convert canvas to blob"));
+                  }
+                },
+                "image/jpeg",
+                0.85 // Good quality, significantly smaller than PNG
+              );
+            } catch (error) {
+              reject(error);
+            }
+          };
+
+          img.onerror = () => {
+            reject(new Error("Failed to load image"));
+          };
+
+          img.src = imageUrl;
+        });
+      };
+
+      // Add each image to the zip file
+      for (let i = 0; i < allImages.length; i++) {
+        try {
+          const scene = allImages[i];
+          const imageUrl = scene.imageUrl!;
+
+          // Convert image to JPG format (smaller file size)
+          const imageBlob = await convertImageToJPG(imageUrl);
+
+          // Add image to zip with numbered filename and proper extension
+          const paddedNumber = String(i + 1).padStart(4, "0");
+          zip.file(`scene-${paddedNumber}.jpg`, imageBlob);
+        } catch (error) {
+          console.error(`Failed to add image ${i + 1} to zip:`, error);
+          toast({
+            title: "Error",
+            description: `Failed to add image ${i + 1}`,
+            variant: "destructive",
+          });
+        }
+      }
+
+      // Generate the zip file with compression
+      toast({
+        title: "Creating Zip",
+        description: "Creating zip file...",
+      });
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: {
+          level: 6,
+        },
+      });
+
+      // Create download link for the zip file
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const link = document.createElement("a");
+      link.href = zipUrl;
+      link.download = `script-images-${Date.now()}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      // Clean up
+      setTimeout(() => URL.revokeObjectURL(zipUrl), 100);
+
+      toast({
+        title: "Download Complete",
+        description: "All images downloaded as zip file!",
+      });
+    } catch (error) {
+      console.error("Failed to create zip file:", error);
+      toast({
+        title: "Error",
+        description: "Failed to create zip file",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Download images with timeline XML for Premiere Pro
+  const downloadWithTimeline = async () => {
+    if (affirmationTimings.length === 0) {
+      toast({
+        title: "No Timestamps",
+        description: "Please generate voice with timestamps first!",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Check if we need to map timestamps first
+    const scenesWithImages = scenes.filter((scene) => scene.imageUrl);
+    if (scenesWithImages.length === 0) {
+      toast({
+        title: "No Images",
+        description: "Please generate images for scenes first!",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Automatically map timestamps if not already mapped
+    const needsMapping = scenesWithImages.some(
+      (scene) => scene.startTime === undefined || scene.endTime === undefined
+    );
+
+    if (needsMapping && scenes.length > 0) {
+      toast({
+        title: "Mapping Timestamps",
+        description: "Mapping timestamps to scenes...",
+      });
+      mapTimestampsToScenes();
+
+      // Wait a bit for state to update
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+
+    const imagesWithTimestamps = scenes.filter(
+      (scene) =>
+        scene.imageUrl &&
+        scene.startTime !== undefined &&
+        scene.endTime !== undefined
+    );
+
+    if (imagesWithTimestamps.length === 0) {
+      toast({
+        title: "No Images with Timestamps",
+        description:
+          "Could not map timestamps to images. Please ensure scenes are synced.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: "Preparing Timeline Package",
+      description: `Preparing ${imagesWithTimestamps.length} images with timeline...`,
+    });
+
+    try {
+      const zip = new JSZip();
+
+      // Helper function to convert image to JPG (much smaller than PNG)
+      const convertImageToJPG = async (imageUrl: string): Promise<Blob> => {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = "anonymous";
+
+          img.onload = () => {
+            try {
+              const canvas = document.createElement("canvas");
+              canvas.width = img.naturalWidth || img.width;
+              canvas.height = img.naturalHeight || img.height;
+
+              const ctx = canvas.getContext("2d");
+              if (!ctx) {
+                reject(new Error("Failed to get canvas context"));
+                return;
+              }
+
+              // Fill with white background (for transparency handling)
+              ctx.fillStyle = "#FFFFFF";
+              ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+              ctx.drawImage(img, 0, 0);
+
+              canvas.toBlob(
+                (blob) => {
+                  if (blob) {
+                    resolve(blob);
+                  } else {
+                    reject(new Error("Failed to convert canvas to blob"));
+                  }
+                },
+                "image/jpeg",
+                0.85 // Good quality, significantly smaller than PNG
+              );
+            } catch (error) {
+              reject(error);
+            }
+          };
+
+          img.onerror = () => {
+            reject(new Error("Failed to load image"));
+          };
+
+          img.src = imageUrl;
+        });
+      };
+
+      // Add each image to the zip file
+      let imageIndex = 0;
+      for (let i = 0; i < scenes.length; i++) {
+        const scene = scenes[i];
+        if (scene.imageUrl && scene.startTime !== undefined) {
+          try {
+            const imageBlob = await convertImageToJPG(scene.imageUrl);
+            const paddedNumber = String(i + 1).padStart(4, "0");
+            zip.file(`scene-${paddedNumber}.jpg`, imageBlob);
+            imageIndex++;
+          } catch (error) {
+            console.error(
+              `Failed to add image ${imageIndex + 1} to zip:`,
+              error
+            );
+            toast({
+              title: "Error",
+              description: `Failed to add image ${imageIndex + 1}`,
+              variant: "destructive",
+            });
+          }
+        }
+      }
+
+      // Generate and add XMEML file
+      const xmeml = generateXMEML();
+      if (xmeml) {
+        zip.file("timeline.xml", xmeml);
+      }
+
+      // Generate the zip file
+      toast({
+        title: "Creating Timeline Package",
+        description: "Creating zip file with timeline...",
+      });
+      const zipBlob = await zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: {
+          level: 6,
+        },
+      });
+
+      // Create download link
+      const zipUrl = URL.createObjectURL(zipBlob);
+      const link = document.createElement("a");
+      link.href = zipUrl;
+      link.download = `script-timeline-${Date.now()}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setTimeout(() => URL.revokeObjectURL(zipUrl), 100);
+
+      toast({
+        title: "Download Complete",
+        description:
+          "Timeline package downloaded! Drag timeline.xml into Premiere Pro.",
+      });
+    } catch (error) {
+      console.error("Failed to create timeline package:", error);
+      toast({
+        title: "Error",
+        description: "Failed to create timeline package",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Generate prompt for a single scene
+  const generatePromptForScene = async (sceneIndex: number) => {
+    const scene = scenes[sceneIndex];
+    if (!scene) return;
+
+    const apiKey = promptModel === "anthropic" ? anthropicApiKey : xaiApiKey;
+    const apiKeyName = promptModel === "anthropic" ? "Anthropic" : "X AI";
+
+    if (!apiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: `Please enter your ${apiKeyName} API key in settings.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setGeneratingPromptForScene(sceneIndex);
+
+    const styleGuide =
+      scenePrompt.trim() || "Create vivid, detailed image prompts";
+
+    const aiPrompt = `Generate an image generation prompt for this scene from a script.
+
+Style Guide: ${styleGuide}
+
+Full Script for Context:
+${affirmations}
+
+Scene to generate prompt for:
+${scene.text}
+
+Generate a single, detailed image generation prompt that follows the style guide and captures the essence of this scene. Output ONLY the prompt, nothing else.`;
+
+    try {
+      let generatedPrompt = "";
+
+      if (promptModel === "anthropic") {
+        const response = await fetch("https://api.anthropic.com/v1/messages", {
+          mode: "cors",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+            "anthropic-dangerous-direct-browser-access": "true",
+          },
+          body: JSON.stringify({
+            model: anthropicModel,
+            max_tokens: 2048,
+            messages: [{ role: "user", content: aiPrompt }],
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        generatedPrompt = data.content?.[0]?.text || "";
+      } else {
+        // X.AI API
+        const response = await fetch("https://api.x.ai/v1/chat/completions", {
+          mode: "cors",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: "grok-4-0709",
+            messages: [{ role: "user", content: aiPrompt }],
+            max_tokens: 2048,
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`API error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        generatedPrompt = data.choices?.[0]?.message?.content || "";
+      }
+
+      if (generatedPrompt.trim()) {
+        const newScenes = [...scenes];
+        newScenes[sceneIndex].prompt = generatedPrompt.trim();
+        setScenes(newScenes);
+
+        toast({
+          title: "Prompt Generated",
+          description: `Generated prompt for scene ${sceneIndex + 1}`,
+        });
+      } else {
+        throw new Error("No prompt generated");
+      }
+    } catch (error) {
+      console.error("Prompt generation error:", error);
+      toast({
+        title: "Error",
+        description: "Failed to generate prompt",
+        variant: "destructive",
+      });
+    } finally {
+      setGeneratingPromptForScene(null);
+    }
+  };
+
+  // Generate image for a single scene
+  const generateImageForScene = async (sceneIndex: number) => {
+    const scene = scenes[sceneIndex];
+    if (!scene) return;
+
+    if (!scene.prompt.trim()) {
+      toast({
+        title: "No Prompt",
+        description: "Please generate a prompt first!",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!falAiApiKey.trim()) {
+      toast({
+        title: "API Key Required",
+        description: "Please enter your Fal AI API key in settings.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setGeneratingImageForScene(sceneIndex);
+
+    try {
+      const response = await fetch("https://fal.run/fal-ai/flux/schnell", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Key ${falAiApiKey}`,
+        },
+        body: JSON.stringify({
+          prompt: scene.prompt,
+          image_size: "landscape_16_9",
+          num_inference_steps: 4,
+          num_images: 1,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error?.message || data.detail || "Fal AI API error"
+        );
+      }
+
+      const imageUrl = data.images?.[0]?.url;
+      if (!imageUrl) {
+        throw new Error("No image URL in response");
+      }
+
+      const newScenes = [...scenes];
+      newScenes[sceneIndex].imageUrl = imageUrl;
+      setScenes(newScenes);
+
+      toast({
+        title: "Image Generated",
+        description: `Generated image for scene ${sceneIndex + 1}`,
+      });
+    } catch (error) {
+      console.error("Image generation error:", error);
+      toast({
+        title: "Error",
+        description: "Failed to generate image",
+        variant: "destructive",
+      });
+    } finally {
+      setGeneratingImageForScene(null);
+    }
+  };
+
   // Download timestamp file
   const handleDownloadTimestamps = () => {
     if (affirmationTimings.length > 0) {
@@ -2717,14 +4035,6 @@ ${srtContent}`;
 
   // Save API key and settings to localStorage whenever they change
   useEffect(() => {
-    if (a4fApiKey) {
-      localStorage.setItem("a4f-api-key", a4fApiKey);
-    } else {
-      localStorage.removeItem("a4f-api-key");
-    }
-  }, [a4fApiKey]);
-
-  useEffect(() => {
     localStorage.setItem("selected-model", selectedModel);
   }, [selectedModel]);
 
@@ -2737,18 +4047,6 @@ ${srtContent}`;
   }, [selectedProviderType]);
 
   useEffect(() => {
-    if (openRouterApiKey) {
-      localStorage.setItem("openrouter-api-key", openRouterApiKey);
-    } else {
-      localStorage.removeItem("openrouter-api-key");
-    }
-  }, [openRouterApiKey]);
-
-  useEffect(() => {
-    localStorage.setItem("openrouter-model", openRouterModel);
-  }, [openRouterModel]);
-
-  useEffect(() => {
     if (anthropicApiKey) {
       localStorage.setItem("anthropic-api-key", anthropicApiKey);
     } else {
@@ -2759,6 +4057,26 @@ ${srtContent}`;
   useEffect(() => {
     localStorage.setItem("anthropic-model", anthropicModel);
   }, [anthropicModel]);
+
+  useEffect(() => {
+    if (xaiApiKey) {
+      localStorage.setItem("xai-api-key", xaiApiKey);
+    } else {
+      localStorage.removeItem("xai-api-key");
+    }
+  }, [xaiApiKey]);
+
+  useEffect(() => {
+    localStorage.setItem("prompt-model", promptModel);
+  }, [promptModel]);
+
+  useEffect(() => {
+    if (falAiApiKey) {
+      localStorage.setItem("fal-ai-api-key", falAiApiKey);
+    } else {
+      localStorage.removeItem("fal-ai-api-key");
+    }
+  }, [falAiApiKey]);
 
   // Initialize audio element when audio is generated
   useEffect(() => {
@@ -2870,26 +4188,6 @@ ${srtContent}`;
     return `${minutes}:${seconds.toString().padStart(2, "0")}`;
   };
 
-  const copySampleAffirmations = () => {
-    navigator.clipboard
-      .writeText(sampleAffirmations)
-      .then(() => {
-        toast({
-          title: "Copied!",
-          description: "Sample affirmations copied to clipboard.",
-        });
-        setShowSampleDialog(false);
-      })
-      .catch(() => {
-        toast({
-          title: "Copy Failed",
-          description:
-            "Could not copy to clipboard. Please select and copy manually.",
-          variant: "destructive",
-        });
-      });
-  };
-
   const handleProcessedAudio = (
     processedAudioUrl: string,
     settings: {
@@ -2947,1169 +4245,1998 @@ ${srtContent}`;
   };
 
   return (
-    <div className="min-h-screen bg-gradient-bg p-6">
-      <div className="w-full space-y-8">
-        {/* Main Content */}
-        <div className="grid gap-8 lg:grid-cols-5">
-          {/* Input Section */}
-          <div className="lg:col-span-2 space-y-6">
-            <Card className="bg-gradient-card shadow-card border-0">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Volume2 className="w-5 h-5 text-primary" />
-                  Script
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <Textarea
-                  placeholder="Enter your affirmations, one per line..."
-                  value={affirmations}
-                  onChange={(e) => setAffirmations(e.target.value)}
-                  className="min-h-[300px] resize-none"
-                />
+    <div className="min-h-screen bg-background">
+      {/* Sticky Header */}
+      <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="w-full flex h-14 items-center px-6">
+          <img src="/logo.png" alt="Logo" className="h-10 w-auto" />
+        </div>
+      </header>
 
-                <Button
-                  variant="outline"
-                  onClick={handleGenerateScript}
-                  disabled={isGeneratingScript}
-                  className="w-full bg-gradient-primary text-white hover:bg-gradient-primary hover:text-white hover:shadow-glow"
-                >
-                  <Bot className="w-4 h-4 mr-0.5" />
-                  {isGeneratingScript ? "Generating..." : "Generate Script"}
-                </Button>
+      <div className="px-6 py-4">
+        <div className="w-full space-y-8">
+          {/* Main Content */}
+          <div className="grid gap-8 lg:grid-cols-5">
+            {/* Input Section */}
+            <div className="lg:col-span-2 space-y-6">
+              <Card className="border">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Volume2 className="w-5 h-5 text-primary" />
+                    Script
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <Textarea
+                    placeholder="Enter your affirmations, one per line..."
+                    value={affirmations}
+                    onChange={(e) => setAffirmations(e.target.value)}
+                    className="min-h-[300px] resize-none"
+                  />
 
-                {generatedAudio && (
-                  <div className="mt-4 p-4 bg-muted/30 rounded-lg border">
-                    <div className="space-y-3">
-                      {/* Play/Pause and Time Display */}
-                      <div className="flex items-center gap-3">
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleGenerateScript}
+                      disabled={isGeneratingScript}
+                      className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                      size="lg"
+                    >
+                      <Bot className="w-4 h-4 mr-0.5" />
+                      {isGeneratingScript ? "Generating..." : "Generate Script"}
+                    </Button>
+                    <Button
+                      onClick={handleGenerate}
+                      disabled={isGenerating}
+                      className="flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                      size="lg"
+                    >
+                      {isGenerating ? "Generating..." : "Generate Audio"}
+                    </Button>
+                  </div>
+
+                  {isGenerating && (
+                    <div className="mt-4 p-4 bg-white rounded-lg border space-y-2">
+                      <Progress value={progress} className="w-full" />
+                      <p className="text-sm text-muted-foreground text-center">
+                        {progress < 70
+                          ? "Processing affirmations..."
+                          : progress < 90
+                          ? "Combining audio clips..."
+                          : "Applying audio effects..."}
+                      </p>
+                    </div>
+                  )}
+
+                  {generatedAudio && (
+                    <div className="mt-4 p-4 bg-white rounded-lg border">
+                      <div className="space-y-3">
+                        {/* Play/Pause and Time Display */}
+                        <div className="flex items-center gap-3">
+                          <Button
+                            onClick={togglePlayback}
+                            size="sm"
+                            variant="outline"
+                            className="flex-shrink-0"
+                            disabled={!audioElement || audioLoading}
+                          >
+                            {audioLoading ? (
+                              <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
+                            ) : isPlaying ? (
+                              <Pause className="w-4 h-4" />
+                            ) : (
+                              <Play className="w-4 h-4" />
+                            )}
+                          </Button>
+
+                          <div className="flex-1 space-y-1">
+                            <div className="flex items-center justify-between text-xs text-muted-foreground">
+                              <span>{formatPlayerTime(currentTime)}</span>
+                              <span>{formatPlayerTime(duration)}</span>
+                            </div>
+                            <input
+                              type="range"
+                              min="0"
+                              max={duration || 0}
+                              value={currentTime}
+                              onChange={handleSeek}
+                              className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                              style={{
+                                background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
+                                  (currentTime / duration) * 100 || 0
+                                }%, #d1d5db ${
+                                  (currentTime / duration) * 100 || 0
+                                }%, #d1d5db 100%)`,
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <Volume2 className="w-4 h-4 text-muted-foreground" />
+                            <input
+                              type="range"
+                              min="0"
+                              max="1"
+                              step="0.1"
+                              value={volume}
+                              onChange={handleVolumeChange}
+                              className="w-16 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
+                              style={{
+                                background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
+                                  volume * 100
+                                }%, #d1d5db ${volume * 100}%, #d1d5db 100%)`,
+                              }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Audio Effects Button and Download Buttons */}
+                        <div className="flex flex-wrap gap-2 pt-2 justify-center">
+                          <Button
+                            onClick={() => setShowEqualizer(true)}
+                            variant="outline"
+                            size="sm"
+                            className="bg-primary text-primary-foreground hover:bg-primary/90"
+                          >
+                            <Settings className="w-4 h-4 mr-1" />
+                            Audio Effects
+                          </Button>
+                          <Button
+                            onClick={handleDownload}
+                            variant="outline"
+                            size="sm"
+                            className="!rounded-md"
+                          >
+                            <Download className="w-4 h-4 mr-0.5" />
+                            Audio
+                          </Button>
+                          <Button
+                            onClick={handleDownloadSrt}
+                            variant="outline"
+                            size="sm"
+                            disabled={affirmationTimings.length === 0}
+                            className="!rounded-md"
+                          >
+                            <Download className="w-4 h-4 mr-0.5" />
+                            .SRT
+                          </Button>
+                          <Button
+                            onClick={generateDescription}
+                            variant="outline"
+                            size="sm"
+                            disabled={
+                              isGeneratingDescription ||
+                              !savedScriptTitle ||
+                              affirmationTimings.length === 0
+                            }
+                            className="!rounded-md"
+                          >
+                            <Download className="w-4 h-4 mr-0.5" />
+                            {isGeneratingDescription
+                              ? "Generating..."
+                              : "Description"}
+                          </Button>
+                          <Button
+                            onClick={handleDownloadScript}
+                            variant="outline"
+                            size="sm"
+                            disabled={!affirmations.trim() || !savedScriptTitle}
+                            className="!rounded-md"
+                          >
+                            <Download className="w-4 h-4 mr-0.5" />
+                            Script
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Settings Section */}
+            <div className="lg:col-span-1 space-y-6">
+              <Card className="border">
+                <CardHeader>
+                  <CardTitle>Voice Settings</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div>
+                    <Label htmlFor="voice">Voice</Label>
+                    <Input
+                      id="voice"
+                      type="text"
+                      placeholder="af_jessica(1)+af_v0nicole(8)+af_v0(1)"
+                      value={voiceSettings.voice}
+                      onChange={(e) =>
+                        setVoiceSettings((prev) => ({
+                          ...prev,
+                          voice: e.target.value,
+                        }))
+                      }
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="speed">Speech Speed</Label>
+                      <Input
+                        id="speed"
+                        type="number"
+                        min="0.5"
+                        max="2.0"
+                        step="0.1"
+                        value={voiceSettings.speed}
+                        onChange={(e) =>
+                          setVoiceSettings((prev) => ({
+                            ...prev,
+                            speed: parseFloat(e.target.value),
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <Label htmlFor="maxChars">Max Char/Line</Label>
+                      <Input
+                        id="maxChars"
+                        type="number"
+                        min="1"
+                        max="42"
+                        step="1"
+                        value={maxCharsPerLine}
+                        onChange={(e) =>
+                          setMaxCharsPerLine(parseInt(e.target.value))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="captionVerticalPos">
+                        Caption Position
+                      </Label>
+                      <Input
+                        id="captionVerticalPos"
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={captionVerticalPosition}
+                        onChange={(e) =>
+                          setCaptionVerticalPosition(parseInt(e.target.value))
+                        }
+                      />
+                    </div>
+
+                    <div>
+                      <Label htmlFor="subscribeButtonVerticalPos">
+                        Subscribe Position
+                      </Label>
+                      <Input
+                        id="subscribeButtonVerticalPos"
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value={subscribeButtonVerticalPosition}
+                        onChange={(e) =>
+                          setSubscribeButtonVerticalPosition(
+                            parseInt(e.target.value)
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="subscribeButtonCount">
+                      Subscribe Button Appearances
+                    </Label>
+                    <Input
+                      id="subscribeButtonCount"
+                      type="number"
+                      min="1"
+                      max="20"
+                      step="1"
+                      value={subscribeButtonCount}
+                      onChange={(e) =>
+                        setSubscribeButtonCount(parseInt(e.target.value))
+                      }
+                    />
+                  </div>
+
+                  <Separator />
+
+                  <div>
+                    <Label className="text-sm mb-2 block">Video Assets</Label>
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
                         <Button
-                          onClick={togglePlayback}
-                          size="sm"
                           variant="outline"
-                          className="flex-shrink-0"
-                          disabled={!audioElement || audioLoading}
+                          size="sm"
+                          onClick={() =>
+                            document
+                              .getElementById("script-image-input")
+                              ?.click()
+                          }
+                          className="flex-1 !rounded-md"
                         >
-                          {audioLoading ? (
-                            <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
-                          ) : isPlaying ? (
-                            <Pause className="w-4 h-4" />
-                          ) : (
-                            <Play className="w-4 h-4" />
+                          {scriptImages.length > 0 && (
+                            <Check className="w-4 h-4 mr-1" />
                           )}
+                          Add Bg{" "}
+                          {scriptImages.length > 0 &&
+                            `(${scriptImages.length})`}
                         </Button>
+                        <Button
+                          variant={bgAnimation ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setBgAnimation(!bgAnimation)}
+                          disabled={
+                            scriptImages.length <= 1 || hasVideoBackground()
+                          }
+                          className="px-3 !rounded-md"
+                          title={
+                            hasVideoBackground()
+                              ? "Animation not available for videos"
+                              : scriptImages.length <= 1
+                              ? "Upload multiple images to enable animation"
+                              : bgAnimation
+                              ? "Animation On"
+                              : "Animation Off"
+                          }
+                        >
+                          {bgAnimation ? "Anim: On" : "Anim: Off"}
+                        </Button>
+                      </div>
+                      <input
+                        id="script-image-input"
+                        type="file"
+                        accept="image/*,video/*"
+                        multiple
+                        className="hidden"
+                        onChange={(e) => {
+                          const files = Array.from(e.target.files || []);
+                          if (files.length > 0) {
+                            setScriptImages(files);
+                          }
+                        }}
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            document
+                              .getElementById("script-music-input")
+                              ?.click()
+                          }
+                          className="flex-1 !rounded-md"
+                        >
+                          {scriptBackgroundMusic && (
+                            <Check className="w-4 h-4 mr-1" />
+                          )}
+                          BGM
+                        </Button>
+                        <input
+                          id="script-music-input"
+                          type="file"
+                          accept="audio/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setScriptBackgroundMusic(file);
+                            }
+                          }}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            document
+                              .getElementById("script-overlay-input")
+                              ?.click()
+                          }
+                          className="flex-1 !rounded-md"
+                        >
+                          {scriptVideoOverlay && (
+                            <Check className="w-4 h-4 mr-1" />
+                          )}
+                          Overlay
+                        </Button>
+                        <input
+                          id="script-overlay-input"
+                          type="file"
+                          accept="video/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setScriptVideoOverlay(file);
+                            }
+                          }}
+                        />
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            document
+                              .getElementById("script-subscribe-input")
+                              ?.click()
+                          }
+                          className="flex-1 !rounded-md"
+                        >
+                          {scriptSubscribeVideo && (
+                            <Check className="w-4 h-4 mr-1" />
+                          )}
+                          Subscribe
+                        </Button>
+                        <input
+                          id="script-subscribe-input"
+                          type="file"
+                          accept="video/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setScriptSubscribeVideo(file);
+                            }
+                          }}
+                        />
+                      </div>
 
-                        <div className="flex-1 space-y-1">
-                          <div className="flex items-center justify-between text-xs text-muted-foreground">
-                            <span>{formatPlayerTime(currentTime)}</span>
-                            <span>{formatPlayerTime(duration)}</span>
+                      <Separator />
+
+                      {/* XML-Based Timing Feature */}
+                      <div>
+                        <Label className="text-sm mb-2 block">
+                          XML-Based Timing (Advanced)
+                        </Label>
+                        <div className="space-y-2">
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                document
+                                  .getElementById("xml-images-input")
+                                  ?.click();
+                              }}
+                              className="flex-1 !rounded-md"
+                            >
+                              {xmlTimedImages.length > 0 && (
+                                <Check className="w-4 h-4 mr-1" />
+                              )}
+                              Upload Images{" "}
+                              {xmlTimedImages.length > 0 &&
+                                `(${xmlTimedImages.length})`}
+                            </Button>
+                            <Button
+                              variant={
+                                xmlTimingAnimation ? "default" : "outline"
+                              }
+                              size="sm"
+                              onClick={() =>
+                                setXmlTimingAnimation(!xmlTimingAnimation)
+                              }
+                              disabled={
+                                xmlTimedImages.length === 0 || !xmlTimingFile
+                              }
+                              className="px-3 !rounded-md"
+                              title={
+                                xmlTimedImages.length === 0 || !xmlTimingFile
+                                  ? "Upload images and XML file to enable animation"
+                                  : xmlTimingAnimation
+                                  ? "Animation On"
+                                  : "Animation Off"
+                              }
+                            >
+                              {xmlTimingAnimation ? "Anim: On" : "Anim: Off"}
+                            </Button>
                           </div>
                           <input
-                            type="range"
-                            min="0"
-                            max={duration || 0}
-                            value={currentTime}
-                            onChange={handleSeek}
-                            className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
-                            style={{
-                              background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
-                                (currentTime / duration) * 100 || 0
-                              }%, #d1d5db ${
-                                (currentTime / duration) * 100 || 0
-                              }%, #d1d5db 100%)`,
+                            id="xml-images-input"
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="hidden"
+                            onChange={(e) => {
+                              const files = Array.from(e.target.files || []);
+                              if (files.length > 0) {
+                                setXmlTimedImages(files);
+                              }
                             }}
                           />
-                        </div>
-
-                        <div className="flex items-center gap-1 flex-shrink-0">
-                          <Volume2 className="w-4 h-4 text-muted-foreground" />
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              document
+                                .getElementById("xml-timing-file-input")
+                                ?.click();
+                            }}
+                            className="w-full !rounded-md"
+                            disabled={xmlTimedImages.length === 0}
+                          >
+                            {xmlTimingFile && (
+                              <Check className="w-4 h-4 mr-1" />
+                            )}
+                            Upload XML Timing File
+                          </Button>
                           <input
-                            type="range"
-                            min="0"
-                            max="1"
-                            step="0.1"
-                            value={volume}
-                            onChange={handleVolumeChange}
-                            className="w-16 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
-                            style={{
-                              background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
-                                volume * 100
-                              }%, #d1d5db ${volume * 100}%, #d1d5db 100%)`,
+                            id="xml-timing-file-input"
+                            type="file"
+                            accept=".xml"
+                            className="hidden"
+                            onChange={async (e) => {
+                              const file = e.target.files?.[0];
+                              if (file) {
+                                try {
+                                  const timings = await parseXmlForTimings(
+                                    file
+                                  );
+                                  setXmlTimingFile(file);
+                                  setParsedXmlTimings(timings);
+                                  toast({
+                                    title: "XML Loaded",
+                                    description: `Found ${timings.length} timing entries. Last image will extend to video end.`,
+                                  });
+                                } catch (error) {
+                                  toast({
+                                    title: "XML Parse Error",
+                                    description:
+                                      "Failed to parse XML file. Check format.",
+                                    variant: "destructive",
+                                  });
+                                }
+                              }
                             }}
                           />
+                          {xmlTimingFile && parsedXmlTimings.length > 0 && (
+                            <div className="text-xs text-green-600 dark:text-green-400 px-2 py-1 bg-green-50 dark:bg-green-950 rounded">
+                              ✓ XML timing active: {parsedXmlTimings.length}{" "}
+                              entries loaded
+                            </div>
+                          )}
                         </div>
                       </div>
-
-                      {/* Audio Effects Button */}
-                      <div className="flex justify-center pt-2">
-                        <Button
-                          onClick={() => setShowEqualizer(true)}
-                          variant="outline"
-                          size="sm"
-                          className="bg-gradient-primary text-white hover:bg-gradient-primary hover:text-white hover:shadow-glow"
-                        >
-                          <Settings className="w-4 h-4 mr-1" />
-                          Audio Effects
-                        </Button>
-                      </div>
                     </div>
                   </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
+                </CardContent>
+              </Card>
 
-          {/* Settings Section */}
-          <div className="lg:col-span-1 space-y-6">
-            <Card className="bg-gradient-card shadow-card border-0">
-              <CardHeader>
-                <CardTitle>Voice Settings</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label htmlFor="voice">Voice</Label>
-                  <Input
-                    id="voice"
-                    type="text"
-                    placeholder="af_jessica(1)+af_v0nicole(8)+af_v0(1)"
-                    value={voiceSettings.voice}
-                    onChange={(e) =>
-                      setVoiceSettings((prev) => ({
-                        ...prev,
-                        voice: e.target.value,
-                      }))
-                    }
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="speed">Speech Speed</Label>
-                  <Input
-                    id="speed"
-                    type="number"
-                    min="0.5"
-                    max="2.0"
-                    step="0.1"
-                    value={voiceSettings.speed}
-                    onChange={(e) =>
-                      setVoiceSettings((prev) => ({
-                        ...prev,
-                        speed: parseFloat(e.target.value),
-                      }))
-                    }
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="maxChars">Max Characters Per Line</Label>
-                  <Input
-                    id="maxChars"
-                    type="number"
-                    min="1"
-                    max="42"
-                    step="1"
-                    value={maxCharsPerLine}
-                    onChange={(e) =>
-                      setMaxCharsPerLine(parseInt(e.target.value))
-                    }
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="captionVerticalPos">
-                    Caption Vertical Position (% from top)
-                  </Label>
-                  <Input
-                    id="captionVerticalPos"
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={captionVerticalPosition}
-                    onChange={(e) =>
-                      setCaptionVerticalPosition(parseInt(e.target.value))
-                    }
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="subscribeButtonVerticalPos">
-                    Subscribe Button Vertical Position (% from top)
-                  </Label>
-                  <Input
-                    id="subscribeButtonVerticalPos"
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="1"
-                    value={subscribeButtonVerticalPosition}
-                    onChange={(e) =>
-                      setSubscribeButtonVerticalPosition(
-                        parseInt(e.target.value)
-                      )
-                    }
-                  />
-                </div>
-
-                <div>
-                  <Label htmlFor="subscribeButtonCount">
-                    Subscribe Button Appearances
-                  </Label>
-                  <Input
-                    id="subscribeButtonCount"
-                    type="number"
-                    min="1"
-                    max="20"
-                    step="1"
-                    value={subscribeButtonCount}
-                    onChange={(e) =>
-                      setSubscribeButtonCount(parseInt(e.target.value))
-                    }
-                  />
-                </div>
-
-                <Separator />
-
-                <div>
-                  <Label className="text-sm mb-2 block">Video Assets</Label>
-                  <div className="space-y-2">
-                    <div className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() =>
-                          document.getElementById("script-image-input")?.click()
-                        }
-                        className="flex-1"
-                      >
-                        {scriptImages.length > 0 && (
-                          <Check className="w-4 h-4 mr-1" />
-                        )}
-                        Add Bg{" "}
-                        {scriptImages.length > 0 && `(${scriptImages.length})`}
-                      </Button>
-                      <Button
-                        variant={bgAnimation ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setBgAnimation(!bgAnimation)}
-                        disabled={
-                          scriptImages.length <= 1 || hasVideoBackground()
-                        }
-                        className="px-3"
-                        title={
-                          hasVideoBackground()
-                            ? "Animation not available for videos"
-                            : scriptImages.length <= 1
-                            ? "Upload multiple images to enable animation"
-                            : bgAnimation
-                            ? "Animation On"
-                            : "Animation Off"
-                        }
-                      >
-                        {bgAnimation ? "Anim: On" : "Anim: Off"}
-                      </Button>
-                    </div>
-                    <input
-                      id="script-image-input"
-                      type="file"
-                      accept="image/*,video/*"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => {
-                        const files = Array.from(e.target.files || []);
-                        if (files.length > 0) {
-                          setScriptImages(files);
-                        }
-                      }}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        document.getElementById("script-music-input")?.click()
-                      }
-                      className="w-full"
-                    >
-                      {scriptBackgroundMusic && (
-                        <Check className="w-4 h-4 mr-1" />
-                      )}
-                      Add Background Music
-                    </Button>
-                    <input
-                      id="script-music-input"
-                      type="file"
-                      accept="audio/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setScriptBackgroundMusic(file);
-                        }
-                      }}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        document.getElementById("script-overlay-input")?.click()
-                      }
-                      className="w-full"
-                    >
-                      {scriptVideoOverlay && <Check className="w-4 h-4 mr-1" />}
-                      Add Video Overlay
-                    </Button>
-                    <input
-                      id="script-overlay-input"
-                      type="file"
-                      accept="video/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setScriptVideoOverlay(file);
-                        }
-                      }}
-                    />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        document
-                          .getElementById("script-subscribe-input")
-                          ?.click()
-                      }
-                      className="w-full"
-                    >
-                      {scriptSubscribeVideo && (
-                        <Check className="w-4 h-4 mr-1" />
-                      )}
-                      Add Subscribe Animation
-                    </Button>
-                    <input
-                      id="script-subscribe-input"
-                      type="file"
-                      accept="video/*"
-                      className="hidden"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setScriptSubscribeVideo(file);
-                        }
-                      }}
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Generate Section */}
-            <Card className="bg-gradient-card shadow-card border-0">
-              <CardContent className="pt-6 space-y-4">
-                <Button
-                  onClick={handleGenerate}
-                  disabled={isGenerating}
-                  className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-500"
-                  size="lg"
-                >
-                  {isGenerating ? "Generating..." : "Generate Audio"}
-                </Button>
-
-                {isGenerating && (
-                  <div className="space-y-2">
-                    <Progress value={progress} className="w-full" />
-                    <p className="text-sm text-muted-foreground text-center">
-                      {progress < 70
-                        ? "Processing affirmations..."
-                        : progress < 90
-                        ? "Combining audio clips..."
-                        : "Applying audio effects..."}
-                    </p>
-                  </div>
-                )}
-
-                {generatedAudio && (
-                  <div className="space-y-3 pt-4 border-t">
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
+              {/* Generate Section */}
+              {generatedAudio && (
+                <Card className="border">
+                  <CardContent className="pt-6 space-y-4">
+                    <div className="space-y-3">
+                      <div className="space-y-2">
                         <Button
-                          onClick={handleDownload}
-                          className="bg-gradient-primary hover:shadow-glow"
-                          size="sm"
-                        >
-                          <Download className="w-4 h-4 mr-0.5" />
-                          Audio
-                        </Button>
-
-                        <Button
-                          onClick={handleDownloadSrt}
-                          variant="outline"
-                          size="sm"
-                          disabled={affirmationTimings.length === 0}
-                        >
-                          <Download className="w-4 h-4 mr-0.5" />
-                          .SRT
-                        </Button>
-
-                        <Button
-                          onClick={generateDescription}
-                          variant="outline"
+                          onClick={() => handleRenderVideo()}
+                          className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
                           size="sm"
                           disabled={
-                            isGeneratingDescription ||
-                            !savedScriptTitle ||
+                            isRendering ||
+                            !scriptBackgroundMusic ||
+                            (scriptImages.length === 0 &&
+                              xmlTimedImages.length === 0) ||
                             affirmationTimings.length === 0
                           }
                         >
-                          <Download className="w-4 h-4 mr-0.5" />
-                          {isGeneratingDescription
-                            ? "Generating..."
-                            : "Description"}
+                          <Video className="w-4 h-4 mr-0.5" />
+                          {isRendering ? "Rendering..." : "Render Video"}
                         </Button>
 
-                        <Button
-                          onClick={handleDownloadScript}
-                          variant="outline"
-                          size="sm"
-                          disabled={!affirmations.trim() || !savedScriptTitle}
-                        >
-                          <Download className="w-4 h-4 mr-0.5" />
-                          Script
-                        </Button>
+                        {isRendering && (
+                          <div className="space-y-2">
+                            <div className="space-y-1">
+                              <div className="flex justify-between text-xs text-muted-foreground">
+                                <span>Progress</span>
+                                <span>{Math.round(renderProgress)}%</span>
+                              </div>
+                              <Progress
+                                value={renderProgress}
+                                className="h-2"
+                              />
+                            </div>
+                            {renderLogs.length > 0 && (
+                              <div className="bg-white rounded-md p-2 max-h-48 overflow-y-auto">
+                                <div className="text-xs font-medium text-muted-foreground mb-1">
+                                  Server Logs:
+                                </div>
+                                <div className="space-y-0.5">
+                                  {renderLogs.map((log, index) => {
+                                    const isError =
+                                      log.toLowerCase().includes("error") ||
+                                      log.toLowerCase().includes("failed") ||
+                                      log
+                                        .toLowerCase()
+                                        .includes("no such file");
+                                    return (
+                                      <div
+                                        key={index}
+                                        className={`text-xs font-mono ${
+                                          isError
+                                            ? "text-destructive"
+                                            : "text-muted-foreground"
+                                        }`}
+                                      >
+                                        {log}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {renderedVideoUrl && (
+                          <div className="text-xs text-muted-foreground bg-white p-2 rounded">
+                            <a
+                              href={renderedVideoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:underline"
+                            >
+                              Download Rendered Video
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+
+            {/* Scene Division Section */}
+            <div className="lg:col-span-2 space-y-6">
+              <Card className="border">
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="w-1/2">
+                      <Label className="text-sm mb-2 block">
+                        Number of Scenes:{" "}
+                        {affirmations.trim()
+                          ? calculateOptimalSceneCount(
+                              affirmations,
+                              sceneSliderPosition
+                            )
+                          : sceneCountRanges[sceneSliderPosition]?.min || 50}
+                      </Label>
+                      <Slider
+                        value={[sceneSliderPosition]}
+                        onValueChange={(value) =>
+                          setSceneSliderPosition(value[0])
+                        }
+                        min={0}
+                        max={4}
+                        step={1}
+                        className="w-full"
+                      />
+                      <div className="flex justify-between text-xs text-muted-foreground mt-1">
+                        <span>1</span>
+                        <span>2</span>
+                        <span>3</span>
+                        <span>4</span>
+                        <span>5</span>
+                      </div>
+                    </div>
+                    <div className="flex gap-2 items-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={downloadAllImages}
+                        disabled={
+                          !scenes.some((scene) => scene.imageUrl) ||
+                          scenes.filter((scene) => scene.imageUrl).length === 0
+                        }
+                        className="!rounded-md"
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Images
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={downloadWithTimeline}
+                        disabled={
+                          affirmationTimings.length === 0 ||
+                          !scenes.some((scene) => scene.imageUrl) ||
+                          scenes.filter((scene) => scene.imageUrl).length === 0
+                        }
+                        className="!rounded-md"
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Timeline
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          // Copy generated prompts to scenes if they exist
+                          if (
+                            generatedPrompts.length > 0 &&
+                            scenes.length > 0
+                          ) {
+                            const updatedScenes = scenes.map(
+                              (scene, index) => ({
+                                ...scene,
+                                prompt:
+                                  scene.prompt || generatedPrompts[index] || "",
+                              })
+                            );
+                            setScenes(updatedScenes);
+                          }
+                          setShowAdvancedSettings(true);
+                        }}
+                        className="!rounded-md"
+                      >
+                        Advanced
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        if (!affirmations.trim()) {
+                          return;
+                        }
+
+                        // Calculate optimal scene count based on slider position and script
+                        const optimalSceneCount = calculateOptimalSceneCount(
+                          affirmations,
+                          sceneSliderPosition
+                        );
+
+                        // Always recreate scenes based on optimal count (prioritizes equal lengths)
+                        const sceneTexts = divideIntoScenes(
+                          affirmations,
+                          optimalSceneCount
+                        );
+
+                        // Try to preserve existing prompts and images by matching scene text
+                        const existingScenesData = new Map<
+                          string,
+                          { prompt: string; imageUrl: string | null }
+                        >();
+                        scenes.forEach((scene) => {
+                          existingScenesData.set(scene.text, {
+                            prompt: scene.prompt,
+                            imageUrl: scene.imageUrl,
+                          });
+                        });
+
+                        // Create new scenes with preserved data where possible
+                        const newScenes = sceneTexts.map((text) => {
+                          const existing = existingScenesData.get(text);
+                          return {
+                            text,
+                            prompt: existing?.prompt || "",
+                            imageUrl: existing?.imageUrl || null,
+                          };
+                        });
+
+                        setScenes(newScenes);
+
+                        // Map timestamps if voice has been generated
+                        if (affirmationTimings.length > 0) {
+                          mapTimestampsToScenes(newScenes);
+                        }
+
+                        // Open advanced settings to show scenes
+                        setShowAdvancedSettings(true);
+                      }}
+                      disabled={!affirmations.trim()}
+                      className="flex-1 !rounded-md"
+                    >
+                      Scenes
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowGenerateScenesDialog(true)}
+                      className="flex-1 !rounded-md"
+                    >
+                      Generate Prompts
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        if (generatedPrompts.length === 0) {
+                          toast({
+                            title: "No Prompts",
+                            description: "Please generate prompts first.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+
+                        if (!falAiApiKey.trim()) {
+                          toast({
+                            title: "API Key Required",
+                            description:
+                              "Please enter your Fal AI API key in settings.",
+                            variant: "destructive",
+                          });
+                          return;
+                        }
+
+                        setIsGeneratingImages(true);
+
+                        try {
+                          const totalImages = generatedPrompts.length;
+
+                          if (totalImages === 0) {
+                            toast({
+                              title: "No Prompts",
+                              description: "Generate prompts first!",
+                              variant: "destructive",
+                            });
+                            setIsGeneratingImages(false);
+                            return;
+                          }
+
+                          toast({
+                            title: "Generating Images",
+                            description: `Starting generation of ${totalImages} images...`,
+                          });
+
+                          setImageGenerationProgress({
+                            current: 0,
+                            total: totalImages,
+                          });
+
+                          // Process in batches of 50 concurrently (copied from ParagraphProcessor.tsx lines 1311-1340)
+                          const batchSize = 50;
+                          let completedImages = 0;
+                          const newGeneratedImages: string[] = [];
+
+                          for (
+                            let i = 0;
+                            i < generatedPrompts.length;
+                            i += batchSize
+                          ) {
+                            const batch = generatedPrompts.slice(
+                              i,
+                              i + batchSize
+                            );
+
+                            // Generate all images in current batch concurrently
+                            await Promise.all(
+                              batch.map(async (prompt, batchIdx) => {
+                                const globalIndex = i + batchIdx;
+
+                                try {
+                                  const response = await fetch(
+                                    "https://fal.run/fal-ai/flux/schnell",
+                                    {
+                                      method: "POST",
+                                      headers: {
+                                        "Content-Type": "application/json",
+                                        Authorization: `Key ${falAiApiKey}`,
+                                      },
+                                      body: JSON.stringify({
+                                        prompt: prompt,
+                                        image_size: "landscape_16_9",
+                                        num_inference_steps: 4,
+                                        num_images: 1,
+                                      }),
+                                    }
+                                  );
+
+                                  const data = await response.json();
+
+                                  if (!response.ok) {
+                                    throw new Error(
+                                      data.error?.message ||
+                                        data.detail ||
+                                        "Fal AI API error"
+                                    );
+                                  }
+
+                                  const imageUrl = data.images?.[0]?.url;
+                                  if (!imageUrl) {
+                                    throw new Error("No image URL in response");
+                                  }
+
+                                  newGeneratedImages[globalIndex] = imageUrl;
+
+                                  setGeneratedImages((prev) => {
+                                    const updated = [...prev];
+                                    updated[globalIndex] = imageUrl;
+                                    return updated;
+                                  });
+
+                                  // Update scene with image URL
+                                  setScenes((prevScenes) => {
+                                    const updated = [...prevScenes];
+                                    if (updated[globalIndex]) {
+                                      updated[globalIndex] = {
+                                        ...updated[globalIndex],
+                                        imageUrl,
+                                      };
+                                    }
+                                    return updated;
+                                  });
+
+                                  completedImages++;
+                                  setImageGenerationProgress({
+                                    current: completedImages,
+                                    total: totalImages,
+                                  });
+                                } catch (error) {
+                                  console.error(
+                                    `Failed to generate image ${
+                                      globalIndex + 1
+                                    }:`,
+                                    error
+                                  );
+                                  completedImages++;
+                                  setImageGenerationProgress({
+                                    current: completedImages,
+                                    total: totalImages,
+                                  });
+                                }
+                              })
+                            );
+
+                            // Progress toast after each batch
+                            toast({
+                              title: "Progress",
+                              description: `Generated ${completedImages} of ${totalImages} images`,
+                            });
+                          }
+
+                          toast({
+                            title: "Images Generated",
+                            description: `Successfully generated ${completedImages} images.`,
+                          });
+                        } catch (error) {
+                          console.error("Image generation failed:", error);
+                          toast({
+                            title: "Generation Failed",
+                            description:
+                              "Failed to generate images. Please try again.",
+                            variant: "destructive",
+                          });
+                        } finally {
+                          setIsGeneratingImages(false);
+                          setImageGenerationProgress({ current: 0, total: 0 });
+                        }
+                      }}
+                      disabled={
+                        isGeneratingImages || generatedPrompts.length === 0
+                      }
+                      className="flex-1 !rounded-md"
+                    >
+                      {isGeneratingImages
+                        ? `Generating ${imageGenerationProgress.current}/${imageGenerationProgress.total}...`
+                        : "Generate Images"}
+                    </Button>
+                  </div>
+
+                  {scenes.length > 0 && (
+                    <div className="grid grid-cols-2 gap-4">
+                      {/* Image Prompts Section */}
+                      <div className="space-y-3">
+                        <Label className="text-sm font-medium">
+                          Image Prompts
+                        </Label>
+                        <div className="border rounded-md p-4 space-y-2 max-h-96 overflow-y-auto bg-white">
+                          {generatedPrompts.length > 0 ? (
+                            generatedPrompts.map((prompt, index) => (
+                              <div
+                                key={index}
+                                className="text-xs p-2 border-b last:border-b-0"
+                              >
+                                {prompt}
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-xs text-muted-foreground text-center py-4">
+                              No prompts yet
+                            </p>
+                          )}
+                        </div>
                       </div>
 
-                      <Button
-                        onClick={() => handleRenderVideo()}
-                        className="w-full bg-gradient-primary hover:shadow-glow"
-                        size="sm"
-                        disabled={
-                          isRendering ||
-                          !scriptBackgroundMusic ||
-                          scriptImages.length === 0 ||
-                          affirmationTimings.length === 0
-                        }
-                      >
-                        <Video className="w-4 h-4 mr-0.5" />
-                        {isRendering ? "Rendering..." : "Render Video"}
-                      </Button>
-
-                      {isRendering && (
-                        <div className="space-y-2">
-                          <div className="space-y-1">
-                            <div className="flex justify-between text-xs text-muted-foreground">
-                              <span>Progress</span>
-                              <span>{Math.round(renderProgress)}%</span>
-                            </div>
-                            <Progress value={renderProgress} className="h-2" />
-                          </div>
-                          {renderLogs.length > 0 && (
-                            <div className="bg-muted/30 rounded-md p-2 max-h-48 overflow-y-auto">
-                              <div className="text-xs font-medium text-muted-foreground mb-1">
-                                Server Logs:
+                      {/* Generated Images Section */}
+                      <div className="space-y-3">
+                        <Label className="text-sm font-medium">
+                          Generated Images
+                        </Label>
+                        <div className="border rounded-md p-4 space-y-2 max-h-96 overflow-y-auto bg-white">
+                          {generatedImages.length > 0 ? (
+                            generatedImages.map((imageUrl, index) => (
+                              <div
+                                key={index}
+                                className="aspect-video rounded-md border overflow-hidden"
+                              >
+                                <img
+                                  src={imageUrl}
+                                  alt={`Scene ${index + 1}`}
+                                  className="w-full h-full object-cover"
+                                />
                               </div>
-                              <div className="space-y-0.5">
-                                {renderLogs.map((log, index) => {
-                                  const isError =
-                                    log.toLowerCase().includes("error") ||
-                                    log.toLowerCase().includes("failed") ||
-                                    log.toLowerCase().includes("no such file");
-                                  return (
-                                    <div
-                                      key={index}
-                                      className={`text-xs font-mono ${
-                                        isError
-                                          ? "text-destructive"
-                                          : "text-muted-foreground"
-                                      }`}
-                                    >
-                                      {log}
-                                    </div>
-                                  );
-                                })}
-                              </div>
+                            ))
+                          ) : (
+                            <div className="aspect-video border-2 border-dashed border-muted-foreground/30 rounded-md flex items-center justify-center">
+                              <p className="text-xs text-muted-foreground text-center">
+                                No images yet
+                              </p>
                             </div>
                           )}
                         </div>
-                      )}
-
-                      {renderedVideoUrl && (
-                        <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded">
-                          <a
-                            href={renderedVideoUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-primary hover:underline"
-                          >
-                            Download Rendered Video
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Background Image Generation */}
-          <div className="lg:col-span-1 space-y-6">
-            <Card className="bg-gradient-card shadow-card border-0">
-              <CardHeader>
-                <CardTitle className="text-sm">Background Image</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label htmlFor="bgImagePrompt" className="text-xs">
-                    Prompt
-                  </Label>
-                  <Textarea
-                    id="bgImagePrompt"
-                    placeholder="Enter prompt for background image..."
-                    value={bgImagePrompt}
-                    onChange={(e) => setBgImagePrompt(e.target.value)}
-                    className="min-h-[80px] resize-none text-xs"
-                  />
-                </div>
-
-                <Button
-                  onClick={generateBackgroundImage}
-                  disabled={bgImageLoading || !bgImagePrompt.trim()}
-                  className="w-full bg-gradient-primary hover:shadow-glow"
-                  size="sm"
-                >
-                  {bgImageLoading ? (
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    "Generate"
-                  )}
-                </Button>
-
-                {/* Image Display */}
-                <div className="aspect-video bg-muted/30 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden relative">
-                  {generatedBgImage ? (
-                    <>
-                      <img
-                        src={generatedBgImage}
-                        alt="Generated Background"
-                        className="w-full h-full object-cover cursor-pointer"
-                        onClick={() =>
-                          expandImage(generatedBgImage, "Background Image")
-                        }
-                      />
-                      <div className="absolute top-2 right-2 flex gap-1">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
-                          onClick={() =>
-                            downloadImage(
-                              generatedBgImage,
-                              "background_image.png"
-                            )
-                          }
-                        >
-                          <Download className="w-3 h-3" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
-                          onClick={() =>
-                            expandImage(generatedBgImage, "Background Image")
-                          }
-                        >
-                          <div className="w-3 h-3 text-white">⤢</div>
-                        </Button>
                       </div>
-                    </>
-                  ) : (
-                    <div className="text-center text-muted-foreground text-xs">
-                      <div className="w-8 h-8 mx-auto mb-2 bg-muted/50 rounded"></div>
-                      Background Image
                     </div>
                   )}
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </div>
           </div>
 
-          {/* Thumbnail Generation */}
-          <div className="lg:col-span-1 space-y-6">
-            <Card className="bg-gradient-card shadow-card border-0">
-              <CardHeader>
-                <CardTitle className="text-sm">Thumbnail</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div>
-                  <Label htmlFor="thumbnailPrompt" className="text-xs">
-                    Prompt
-                  </Label>
-                  <Textarea
-                    id="thumbnailPrompt"
-                    placeholder="Enter prompt for thumbnail..."
-                    value={thumbnailPrompt}
-                    onChange={(e) => setThumbnailPrompt(e.target.value)}
-                    className="min-h-[80px] resize-none text-xs"
-                  />
-                </div>
+          {/* API Button - Bottom Left */}
+          <Button
+            onClick={() => setShowSampleDialog(true)}
+            size="sm"
+            variant="outline"
+            className="fixed bottom-4 left-4 z-50 flex items-center gap-0.5 bg-white border hover:border-primary !rounded-md"
+          >
+            <Key className="w-4 h-4" />
+            API
+          </Button>
 
-                <Button
-                  onClick={generateThumbnail}
-                  disabled={thumbnailLoading || !thumbnailPrompt.trim()}
-                  className="w-full bg-gradient-primary hover:shadow-glow"
-                  size="sm"
-                >
-                  {thumbnailLoading ? (
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                  ) : (
-                    "Generate"
-                  )}
-                </Button>
+          {/* API Settings Dialog */}
+          <Dialog open={showSampleDialog} onOpenChange={setShowSampleDialog}>
+            <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Key className="w-5 h-5 text-primary" />
+                  API Settings
+                </DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto space-y-6 p-4">
+                {/* Prompt Generation Section */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold">Prompt Generation</h3>
 
-                {/* Image Display */}
-                <div className="aspect-video bg-muted/30 rounded-lg border-2 border-dashed border-muted-foreground/30 flex items-center justify-center overflow-hidden relative">
-                  {generatedThumbnail ? (
-                    <>
-                      <img
-                        src={generatedThumbnail}
-                        alt="Generated Thumbnail"
-                        className="w-full h-full object-cover cursor-pointer"
-                        onClick={() =>
-                          expandImage(generatedThumbnail, "Thumbnail")
-                        }
-                      />
-                      <div className="absolute top-2 right-2 flex gap-1">
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
-                          onClick={() =>
-                            downloadImage(generatedThumbnail, "thumbnail.png")
-                          }
-                        >
-                          <Download className="w-3 h-3" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="secondary"
-                          className="h-6 w-6 p-0 bg-black/50 hover:bg-black/70 text-white"
-                          onClick={() =>
-                            expandImage(generatedThumbnail, "Thumbnail")
-                          }
-                        >
-                          <div className="w-3 h-3 text-white">⤢</div>
-                        </Button>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="text-center text-muted-foreground text-xs">
-                      <div className="w-8 h-8 mx-auto mb-2 bg-muted/50 rounded"></div>
-                      Thumbnail
-                    </div>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-        </div>
-      </div>
-
-      {/* API Button - Bottom Left */}
-      <Button
-        onClick={() => setShowSampleDialog(true)}
-        size="sm"
-        variant="outline"
-        className="fixed bottom-4 left-4 z-50 flex items-center gap-0.5 bg-background/90 backdrop-blur-sm border-primary/20 hover:border-primary/40 shadow-lg"
-      >
-        <Key className="w-4 h-4" />
-        API
-      </Button>
-
-      {/* API Settings Dialog */}
-      <Dialog open={showSampleDialog} onOpenChange={setShowSampleDialog}>
-        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Key className="w-5 h-5 text-primary" />
-              API Settings
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex-1 overflow-auto space-y-6 p-4">
-            <div className="space-y-4">
-              <div>
-                <Label>Provider Type</Label>
-                <div className="flex space-x-4">
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="radio"
-                      id="a4f"
-                      name="providerType"
-                      value="a4f"
-                      checked={selectedProviderType === "a4f"}
-                      onChange={(e) => setSelectedProviderType(e.target.value)}
-                      className="w-4 h-4"
-                    />
-                    <Label htmlFor="a4f" className="text-sm">
-                      A4F
-                    </Label>
+                  <div className="space-y-2">
+                    <Label htmlFor="prompt-model">Model</Label>
+                    <Select
+                      value={promptModel}
+                      onValueChange={(value: "anthropic" | "xai") =>
+                        setPromptModel(value)
+                      }
+                    >
+                      <SelectTrigger id="prompt-model">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="anthropic">
+                          Anthropic Claude Sonnet 4
+                        </SelectItem>
+                        <SelectItem value="xai">X AI Grok 4</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="radio"
-                      id="anthropic"
-                      name="providerType"
-                      value="anthropic"
-                      checked={selectedProviderType === "anthropic"}
-                      onChange={(e) => setSelectedProviderType(e.target.value)}
-                      className="w-4 h-4"
-                    />
-                    <Label htmlFor="anthropic" className="text-sm">
-                      Anthropic
-                    </Label>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="radio"
-                      id="openrouter"
-                      name="providerType"
-                      value="openrouter"
-                      checked={selectedProviderType === "openrouter"}
-                      onChange={(e) => setSelectedProviderType(e.target.value)}
-                      className="w-4 h-4"
-                    />
-                    <Label htmlFor="openrouter" className="text-sm">
-                      OpenRouter
-                    </Label>
-                  </div>
-                </div>
-              </div>
 
-              {selectedProviderType === "a4f" ? (
-                <>
-                  <div>
-                    <Label htmlFor="a4fApiKey">A4F API Key</Label>
+                  <div className="space-y-2">
+                    <Label htmlFor="anthropic-key">Anthropic API Key</Label>
                     <Input
-                      id="a4fApiKey"
+                      id="anthropic-key"
                       type="password"
-                      placeholder="Enter your A4F API key..."
-                      value={a4fApiKey}
-                      onChange={(e) => setA4fApiKey(e.target.value)}
-                      className="w-full"
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="provider">Provider URL</Label>
-                    <Input
-                      id="provider"
-                      type="text"
-                      placeholder="https://api.a4f.co/v1"
-                      value={selectedProvider}
-                      onChange={(e) => setSelectedProvider(e.target.value)}
-                      className="w-full"
-                    />
-                  </div>
-
-                  <div>
-                    <Label htmlFor="model">Model</Label>
-                    <Input
-                      id="model"
-                      type="text"
-                      placeholder="provider-6/gpt-4.1"
-                      value={selectedModel}
-                      onChange={(e) => setSelectedModel(e.target.value)}
-                      className="w-full"
-                    />
-                  </div>
-                </>
-              ) : selectedProviderType === "anthropic" ? (
-                <>
-                  <div>
-                    <Label htmlFor="anthropicApiKey">Anthropic API Key</Label>
-                    <Input
-                      id="anthropicApiKey"
-                      type="password"
-                      placeholder="Enter your Anthropic API key..."
+                      placeholder="sk-ant-..."
                       value={anthropicApiKey}
                       onChange={(e) => setAnthropicApiKey(e.target.value)}
                       className="w-full"
                     />
                   </div>
 
-                  <div>
-                    <Label htmlFor="anthropicModel">Model</Label>
+                  <div className="space-y-2">
+                    <Label htmlFor="xai-key">X AI API Key</Label>
                     <Input
-                      id="anthropicModel"
-                      type="text"
-                      placeholder="claude-sonnet-4-20250514"
-                      value={anthropicModel}
-                      onChange={(e) => setAnthropicModel(e.target.value)}
-                      className="w-full"
-                    />
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <Label htmlFor="openRouterApiKey">OpenRouter API Key</Label>
-                    <Input
-                      id="openRouterApiKey"
+                      id="xai-key"
                       type="password"
-                      placeholder="Enter your OpenRouter API key..."
-                      value={openRouterApiKey}
-                      onChange={(e) => setOpenRouterApiKey(e.target.value)}
+                      placeholder="xai-..."
+                      value={xaiApiKey}
+                      onChange={(e) => setXaiApiKey(e.target.value)}
                       className="w-full"
                     />
                   </div>
 
-                  <div>
-                    <Label htmlFor="openRouterModel">Model</Label>
+                  {promptModel === "anthropic" && (
+                    <div className="space-y-2">
+                      <Label htmlFor="anthropicModel">Anthropic Model</Label>
+                      <Input
+                        id="anthropicModel"
+                        type="text"
+                        placeholder="claude-sonnet-4-20250514"
+                        value={anthropicModel}
+                        onChange={(e) => setAnthropicModel(e.target.value)}
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+
+                {/* Image Generation Section */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold">Image Generation</h3>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="image-model">Model</Label>
+                    <Select value="fal" disabled>
+                      <SelectTrigger id="image-model">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="fal">
+                          Fal AI (Flux 1.1 Schnell)
+                        </SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="fal-key">Fal AI API Key</Label>
                     <Input
-                      id="openRouterModel"
-                      type="text"
-                      placeholder="openai/gpt-4o"
-                      value={openRouterModel}
-                      onChange={(e) => setOpenRouterModel(e.target.value)}
+                      id="fal-key"
+                      type="password"
+                      placeholder="fal_..."
+                      value={falAiApiKey}
+                      onChange={(e) => setFalAiApiKey(e.target.value)}
                       className="w-full"
                     />
                   </div>
-                </>
-              )}
-            </div>
+                </div>
 
-            <Separator />
+                <Separator />
 
-            <div className="space-y-4">
-              <h3 className="text-sm font-medium">Render Server</h3>
-              <div>
-                <Label htmlFor="renderServerUrl">Render Server URL</Label>
-                <Input
-                  id="renderServerUrl"
-                  type="text"
-                  placeholder="http://localhost:8001"
-                  value={renderServerUrl}
-                  onChange={(e) => {
-                    setRenderServerUrl(e.target.value);
-                    localStorage.setItem("render-server-url", e.target.value);
-                  }}
-                  className="w-full"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  URL of your FFmpeg render server (Docker container)
-                </p>
-              </div>
-            </div>
-
-            <Separator />
-
-            <div className="space-y-4">
-              <h3 className="text-sm font-medium">Sample Affirmations</h3>
-              <p className="text-sm text-muted-foreground">
-                Use these sample affirmations to supplement your generated
-                script or as inspiration.
-              </p>
-              <div className="relative">
-                <Textarea
-                  value={sampleAffirmations}
-                  readOnly
-                  className="min-h-[200px] resize-none text-sm no-focus-outline"
-                />
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Shortcuts Dialog */}
-      <Dialog open={showShortcuts} onOpenChange={setShowShortcuts}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Keyboard className="w-5 h-5 text-primary" />
-              Voice Shortcuts
-            </DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="grid gap-2 text-sm">
-              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + I</span>
-                <span>Ivory Affirmation</span>
-              </div>
-              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + G</span>
-                <span>Gradient Voice (with auto EQ)</span>
-              </div>
-              <div className="flex justify-between items-center p-2 rounded bg-muted/30">
-                <span className="font-mono">Ctrl + M</span>
-                <span>Show this dialog</span>
-              </div>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Script Generation Dialog */}
-      <Dialog open={showScriptDialog} onOpenChange={setShowScriptDialog}>
-        <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Bot className="w-5 h-5 text-primary" />
-              Generate Script
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex-1 overflow-auto space-y-4 p-4">
-            <div>
-              <Label>Script Type</Label>
-              <div className="flex space-x-4 mt-2">
-                <Button
-                  variant={scriptType === "affirmation" ? "default" : "outline"}
-                  onClick={() => setScriptType("affirmation")}
-                  className={`flex-1 ${
-                    scriptType === "affirmation"
-                      ? "bg-gradient-primary text-white"
-                      : ""
-                  }`}
-                >
-                  Affirmation Script
-                </Button>
-                <Button
-                  variant={scriptType === "meditation" ? "default" : "outline"}
-                  onClick={() => setScriptType("meditation")}
-                  className={`flex-1 ${
-                    scriptType === "meditation"
-                      ? "bg-gradient-primary text-white"
-                      : ""
-                  }`}
-                >
-                  Meditation Script
-                </Button>
-              </div>
-            </div>
-            {scriptType === "affirmation" && (
-              <div>
-                <Label>Affirmation Length</Label>
-                <div className="flex space-x-4 mt-2">
-                  <Button
-                    variant={
-                      affirmationLength === "long" ? "default" : "outline"
-                    }
-                    onClick={() => setAffirmationLength("long")}
-                    className={`flex-1 ${
-                      affirmationLength === "long"
-                        ? "bg-gradient-primary text-white"
-                        : ""
-                    }`}
-                  >
-                    Long
-                  </Button>
-                  <Button
-                    variant={
-                      affirmationLength === "short" ? "default" : "outline"
-                    }
-                    onClick={() => setAffirmationLength("short")}
-                    className={`flex-1 ${
-                      affirmationLength === "short"
-                        ? "bg-gradient-primary text-white"
-                        : ""
-                    }`}
-                  >
-                    Short
-                  </Button>
+                <div className="space-y-4">
+                  <h3 className="text-sm font-medium">Render Server</h3>
+                  <div>
+                    <Label htmlFor="renderServerUrl">Render Server URL</Label>
+                    <Input
+                      id="renderServerUrl"
+                      type="text"
+                      placeholder="http://localhost:8001"
+                      value={renderServerUrl}
+                      onChange={(e) => {
+                        setRenderServerUrl(e.target.value);
+                        localStorage.setItem(
+                          "render-server-url",
+                          e.target.value
+                        );
+                      }}
+                      className="w-full"
+                    />
+                    <p className="text-xs text-muted-foreground mt-1">
+                      URL of your FFmpeg render server (Docker container)
+                    </p>
+                  </div>
                 </div>
               </div>
-            )}
-            <div>
-              <Label htmlFor="scriptTitle">Script Title</Label>
-              <Input
-                id="scriptTitle"
-                type="text"
-                placeholder={
-                  scriptType === "affirmation"
-                    ? "e.g., 'Daily Affirmations for Success'"
-                    : "e.g., 'Guided Meditation for Peace'"
-                }
-                value={scriptTitle}
-                onChange={(e) => setScriptTitle(e.target.value)}
-              />
-            </div>
-            <div>
-              <Label htmlFor="scriptDate">Date (optional, for context)</Label>
-              <Input
-                id="scriptDate"
-                type="text"
-                placeholder="e.g., 'July 2025' (optional)"
-                value={scriptDate}
-                onChange={(e) => setScriptDate(e.target.value)}
-              />
-            </div>
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <Label>Transcript (Optional)</Label>
+            </DialogContent>
+          </Dialog>
+
+          {/* Shortcuts Dialog */}
+          <Dialog open={showShortcuts} onOpenChange={setShowShortcuts}>
+            <DialogContent className="sm:max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Keyboard className="w-5 h-5 text-primary" />
+                  Voice Shortcuts
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-3">
+                <div className="grid gap-2 text-sm">
+                  <div className="flex justify-between items-center p-2 rounded bg-white">
+                    <span className="font-mono">Ctrl + I</span>
+                    <span>Ivory Affirmation</span>
+                  </div>
+                  <div className="flex justify-between items-center p-2 rounded bg-white">
+                    <span className="font-mono">Ctrl + G</span>
+                    <span>Gradient Voice (with auto EQ)</span>
+                  </div>
+                  <div className="flex justify-between items-center p-2 rounded bg-white">
+                    <span className="font-mono">Ctrl + M</span>
+                    <span>Show this dialog</span>
+                  </div>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Script Generation Dialog */}
+          <Dialog open={showScriptDialog} onOpenChange={setShowScriptDialog}>
+            <DialogContent className="sm:max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Bot className="w-5 h-5 text-primary" />
+                  Generate Script
+                </DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto space-y-4 p-4">
+                <div>
+                  <Label>Script Type</Label>
+                  <div className="flex space-x-4 mt-2">
+                    <Button
+                      variant={
+                        scriptType === "affirmation" ? "default" : "outline"
+                      }
+                      onClick={() => setScriptType("affirmation")}
+                      className={`flex-1 ${
+                        scriptType === "affirmation"
+                          ? "bg-primary text-primary-foreground"
+                          : ""
+                      }`}
+                    >
+                      Affirmation Script
+                    </Button>
+                    <Button
+                      variant={
+                        scriptType === "meditation" ? "default" : "outline"
+                      }
+                      onClick={() => setScriptType("meditation")}
+                      className={`flex-1 ${
+                        scriptType === "meditation"
+                          ? "bg-primary text-primary-foreground"
+                          : ""
+                      }`}
+                    >
+                      Meditation Script
+                    </Button>
+                  </div>
+                </div>
+                {scriptType === "affirmation" && (
+                  <div>
+                    <Label>Affirmation Length</Label>
+                    <div className="flex space-x-4 mt-2">
+                      <Button
+                        variant={
+                          affirmationLength === "long" ? "default" : "outline"
+                        }
+                        onClick={() => setAffirmationLength("long")}
+                        className={`flex-1 ${
+                          affirmationLength === "long"
+                            ? "bg-primary text-primary-foreground"
+                            : ""
+                        }`}
+                      >
+                        Long
+                      </Button>
+                      <Button
+                        variant={
+                          affirmationLength === "short" ? "default" : "outline"
+                        }
+                        onClick={() => setAffirmationLength("short")}
+                        className={`flex-1 ${
+                          affirmationLength === "short"
+                            ? "bg-primary text-primary-foreground"
+                            : ""
+                        }`}
+                      >
+                        Short
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <Label htmlFor="scriptTitle">Script Title</Label>
+                  <Input
+                    id="scriptTitle"
+                    type="text"
+                    placeholder={
+                      scriptType === "affirmation"
+                        ? "e.g., 'Daily Affirmations for Success'"
+                        : "e.g., 'Guided Meditation for Peace'"
+                    }
+                    value={scriptTitle}
+                    onChange={(e) => setScriptTitle(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="scriptDate">
+                    Date (optional, for context)
+                  </Label>
+                  <Input
+                    id="scriptDate"
+                    type="text"
+                    placeholder="e.g., 'July 2025' (optional)"
+                    value={scriptDate}
+                    onChange={(e) => setScriptDate(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <Label>Transcript (Optional)</Label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowTranscriptDialog(true)}
+                      className="text-xs"
+                    >
+                      {transcript ? "Edit Transcript" : "Add Transcript"}
+                    </Button>
+                  </div>
+                  {transcript && (
+                    <div className="text-xs text-muted-foreground bg-white p-2 rounded">
+                      Transcript added ({transcript.split("\n").length} lines)
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <Label htmlFor="customPrompt">Custom Prompt (Optional)</Label>
+                  <Textarea
+                    id="customPrompt"
+                    placeholder={
+                      scriptType === "affirmation"
+                        ? "Leave empty to use default affirmation prompt. You can use ${title}, ${date}, and ${transcript} placeholders."
+                        : "Leave empty to use default meditation prompt. You can use ${title}, ${date}, and ${transcript} placeholders."
+                    }
+                    value={customPrompt}
+                    onChange={(e) => setCustomPrompt(e.target.value)}
+                    className="min-h-[100px] resize-none text-sm"
+                  />
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Available placeholders: {"${title}"}, {"${date}"},{" "}
+                    {"${transcript}"}
+                  </div>
+                </div>
                 <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setShowTranscriptDialog(true)}
-                  className="text-xs"
+                  onClick={handleScriptSubmit}
+                  disabled={isGeneratingScript}
+                  className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
                 >
-                  {transcript ? "Edit Transcript" : "Add Transcript"}
+                  {isGeneratingScript
+                    ? `Generating ${
+                        scriptType === "affirmation"
+                          ? "Affirmation"
+                          : "Meditation"
+                      } Script...`
+                    : `Generate ${
+                        scriptType === "affirmation"
+                          ? "Affirmation"
+                          : "Meditation"
+                      } Script`}
                 </Button>
               </div>
-              {transcript && (
-                <div className="text-xs text-muted-foreground bg-muted/30 p-2 rounded">
-                  Transcript added ({transcript.split("\n").length} lines)
-                </div>
-              )}
-            </div>
-            <div>
-              <Label htmlFor="customPrompt">Custom Prompt (Optional)</Label>
-              <Textarea
-                id="customPrompt"
-                placeholder={
-                  scriptType === "affirmation"
-                    ? "Leave empty to use default affirmation prompt. You can use ${title}, ${date}, and ${transcript} placeholders."
-                    : "Leave empty to use default meditation prompt. You can use ${title}, ${date}, and ${transcript} placeholders."
-                }
-                value={customPrompt}
-                onChange={(e) => setCustomPrompt(e.target.value)}
-                className="min-h-[100px] resize-none text-sm"
-              />
-              <div className="text-xs text-muted-foreground mt-1">
-                Available placeholders: {"${title}"}, {"${date}"},{" "}
-                {"${transcript}"}
+            </DialogContent>
+          </Dialog>
+
+          {/* Image Expansion Modal */}
+          <Dialog open={showImageModal} onOpenChange={setShowImageModal}>
+            <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <div className="w-5 h-5 text-primary">🖼️</div>
+                  {selectedImage?.title}
+                </DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto flex items-center justify-center p-4">
+                {selectedImage && (
+                  <div className="relative">
+                    <img
+                      src={selectedImage.url}
+                      alt={selectedImage.title}
+                      className="max-w-full max-h-full object-contain rounded-lg"
+                    />
+                    <div className="absolute top-4 right-4">
+                      <Button
+                        onClick={() =>
+                          downloadImage(
+                            selectedImage.url,
+                            `${selectedImage.title
+                              .toLowerCase()
+                              .replace(/\s+/g, "_")}.jpg`
+                          )
+                        }
+                        className="bg-black/50 hover:bg-black/70 text-white"
+                        size="sm"
+                      >
+                        <Download className="w-4 h-4 mr-1" />
+                        Download
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-            <Button
-              onClick={handleScriptSubmit}
-              disabled={isGeneratingScript}
-              className="w-full bg-gradient-primary hover:shadow-glow transition-all duration-500"
-            >
-              {isGeneratingScript
-                ? `Generating ${
-                    scriptType === "affirmation" ? "Affirmation" : "Meditation"
-                  } Script...`
-                : `Generate ${
-                    scriptType === "affirmation" ? "Affirmation" : "Meditation"
-                  } Script`}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+            </DialogContent>
+          </Dialog>
 
-      {/* Image Expansion Modal */}
-      <Dialog open={showImageModal} onOpenChange={setShowImageModal}>
-        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <div className="w-5 h-5 text-primary">🖼️</div>
-              {selectedImage?.title}
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex-1 overflow-auto flex items-center justify-center p-4">
-            {selectedImage && (
-              <div className="relative">
-                <img
-                  src={selectedImage.url}
-                  alt={selectedImage.title}
-                  className="max-w-full max-h-full object-contain rounded-lg"
-                />
-                <div className="absolute top-4 right-4">
-                  <Button
-                    onClick={() =>
-                      downloadImage(
-                        selectedImage.url,
-                        `${selectedImage.title
-                          .toLowerCase()
-                          .replace(/\s+/g, "_")}.png`
-                      )
-                    }
-                    className="bg-black/50 hover:bg-black/70 text-white"
-                    size="sm"
-                  >
-                    <Download className="w-4 h-4 mr-1" />
-                    Download
-                  </Button>
-                </div>
+          {/* Audio Equalizer Modal */}
+          <Dialog open={showEqualizer} onOpenChange={setShowEqualizer}>
+            <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Settings className="w-5 h-5 text-primary" />
+                  Audio Effects & Equalizer
+                </DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto p-4">
+                {generatedAudio && (
+                  <AudioEqualizer
+                    audioUrl={generatedAudio}
+                    onProcessedAudio={handleProcessedAudio}
+                    savedSettings={eqSettings}
+                  />
+                )}
               </div>
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
+            </DialogContent>
+          </Dialog>
 
-      {/* Audio Equalizer Modal */}
-      <Dialog open={showEqualizer} onOpenChange={setShowEqualizer}>
-        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Settings className="w-5 h-5 text-primary" />
-              Audio Effects & Equalizer
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex-1 overflow-auto p-4">
-            {generatedAudio && (
-              <AudioEqualizer
-                audioUrl={generatedAudio}
-                onProcessedAudio={handleProcessedAudio}
-                savedSettings={eqSettings}
-              />
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Transcript Dialog */}
-      <Dialog
-        open={showTranscriptDialog}
-        onOpenChange={setShowTranscriptDialog}
-      >
-        <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <FileText className="w-5 h-5 text-primary" />
-              Add/Edit Transcript
-            </DialogTitle>
-          </DialogHeader>
-          <div className="flex-1 overflow-auto p-4 space-y-4">
-            <div>
-              <Label htmlFor="transcriptInput">Transcript</Label>
-              <Textarea
-                id="transcriptInput"
-                placeholder={`Paste your raw transcript here. It will be automatically cleaned as you type.
+          {/* Transcript Dialog */}
+          <Dialog
+            open={showTranscriptDialog}
+            onOpenChange={setShowTranscriptDialog}
+          >
+            <DialogContent className="sm:max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-primary" />
+                  Add/Edit Transcript
+                </DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto p-4 space-y-4">
+                <div>
+                  <Label htmlFor="transcriptInput">Transcript</Label>
+                  <Textarea
+                    id="transcriptInput"
+                    placeholder={`Paste your raw transcript here. It will be automatically cleaned as you type.
 
 Automatic cleaning includes:
 • Removing timestamps and music markers
 • Converting ellipsis (...) to natural pauses
 • Breaking sentences into individual ${
-                  scriptType === "affirmation"
-                    ? "affirmations"
-                    : "meditation segments"
-                }
+                      scriptType === "affirmation"
+                        ? "affirmations"
+                        : "meditation segments"
+                    }
 • Adding proper punctuation where needed`}
-                value={transcript}
-                onChange={(e) => {
-                  const rawValue = e.target.value;
-                  // Auto-clean the transcript as user types
-                  const cleaned = cleanTranscript(rawValue);
-                  setTranscript(cleaned);
-                }}
-                className="min-h-[400px] resize-none text-sm"
-              />
-            </div>
-            <div className="flex justify-end space-x-2">
-              <Button
-                variant="outline"
-                onClick={() => setShowTranscriptDialog(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                onClick={() => setShowTranscriptDialog(false)}
-                className="bg-gradient-primary hover:shadow-glow"
-              >
-                Save Transcript
-              </Button>
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
+                    value={transcript}
+                    onChange={(e) => {
+                      const rawValue = e.target.value;
+                      // Auto-clean the transcript as user types
+                      const cleaned = cleanTranscript(rawValue);
+                      setTranscript(cleaned);
+                    }}
+                    className="min-h-[400px] resize-none text-sm"
+                  />
+                </div>
+                <div className="flex justify-end space-x-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowTranscriptDialog(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={() => setShowTranscriptDialog(false)}
+                    className="bg-primary text-primary-foreground hover:bg-primary/90"
+                  >
+                    Save Transcript
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Generate Prompts Dialog */}
+          <Dialog
+            open={showGenerateScenesDialog}
+            onOpenChange={setShowGenerateScenesDialog}
+          >
+            <DialogContent className="sm:max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Generate Prompts</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 p-4">
+                <div>
+                  <Label htmlFor="scenePrompt" className="text-sm">
+                    Image Generation Prompt
+                  </Label>
+                  <Textarea
+                    id="scenePrompt"
+                    placeholder="Enter style or instructions for image generation..."
+                    value={scenePrompt}
+                    onChange={(e) => setScenePrompt(e.target.value)}
+                    className="min-h-[120px] resize-none mt-2"
+                  />
+                </div>
+
+                {/* Placeholder for future settings */}
+                <div className="space-y-4">
+                  {/* Settings will be added here */}
+                </div>
+
+                <div className="flex justify-end gap-2 pt-4">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowGenerateScenesDialog(false)}
+                    className="!rounded-md"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      if (!affirmations.trim()) {
+                        toast({
+                          title: "No Script",
+                          description: "Please add a script first.",
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      const apiKey =
+                        promptModel === "anthropic"
+                          ? anthropicApiKey
+                          : xaiApiKey;
+                      const apiKeyName =
+                        promptModel === "anthropic" ? "Anthropic" : "X AI";
+
+                      if (!apiKey.trim()) {
+                        toast({
+                          title: "API Key Required",
+                          description: `Please enter your ${apiKeyName} API key in settings.`,
+                          variant: "destructive",
+                        });
+                        return;
+                      }
+
+                      setIsGeneratingScript(true);
+
+                      // Clear previous prompts and close dialog to show streaming
+                      setGeneratedPrompts([]);
+                      setShowGenerateScenesDialog(false);
+
+                      try {
+                        // Use existing scenes or create them if they don't exist
+                        let sceneTexts: string[];
+                        if (scenes.length > 0) {
+                          // Use existing scenes
+                          sceneTexts = scenes.map((s) => s.text);
+                        } else {
+                          // Create scenes if they don't exist - use optimal count
+                          const optimalSceneCount = calculateOptimalSceneCount(
+                            affirmations,
+                            sceneSliderPosition
+                          );
+                          sceneTexts = divideIntoScenes(
+                            affirmations,
+                            optimalSceneCount
+                          );
+                          const newScenes = sceneTexts.map((text) => ({
+                            text,
+                            prompt: "",
+                            imageUrl: null,
+                          }));
+                          setScenes(newScenes);
+                        }
+
+                        const styleGuide =
+                          scenePrompt.trim() ||
+                          "Create vivid, detailed image prompts";
+
+                        // Split scenes into batches of 50 for accuracy and token limits
+                        const batchSize = 50;
+                        const batches: string[][] = [];
+                        for (let i = 0; i < sceneTexts.length; i += batchSize) {
+                          batches.push(sceneTexts.slice(i, i + batchSize));
+                        }
+
+                        let allPrompts: string[] = [];
+
+                        // Process each batch
+                        for (
+                          let batchIndex = 0;
+                          batchIndex < batches.length;
+                          batchIndex++
+                        ) {
+                          const batch = batches[batchIndex];
+                          const startIndex = batchIndex * batchSize;
+
+                          toast({
+                            title: "Generating Batch",
+                            description: `Processing batch ${
+                              batchIndex + 1
+                            } of ${batches.length} (scenes ${startIndex + 1}-${
+                              startIndex + batch.length
+                            })`,
+                          });
+
+                          // Create the prompt for AI - same structure for every batch
+                          const aiPrompt = `I have a script that has been divided into ${
+                            sceneTexts.length
+                          } scenes total. I need you to generate image generation prompts for scenes ${
+                            startIndex + 1
+                          } to ${startIndex + batch.length}.
+
+Style Guide: ${styleGuide}
+
+Full Script for Context:
+${affirmations}
+
+---
+
+Scene Division (Batch ${batchIndex + 1}):
+${batch
+  .map((text, index) => `Scene ${startIndex + index + 1}: ${text}`)
+  .join("\n\n")}
+
+---
+
+Please generate ${
+                            batch.length
+                          } image generation prompts (one for each scene in this batch) that follow the style guide and capture the essence of each scene. Output ONLY the prompts, numbered from ${
+                            startIndex + 1
+                          } to ${
+                            startIndex + batch.length
+                          }, one per line, in this format:
+${startIndex + 1}. [prompt for scene ${startIndex + 1}]
+${startIndex + 2}. [prompt for scene ${startIndex + 2}]
+...and so on.`;
+
+                          let generatedText = "";
+
+                          if (promptModel === "anthropic") {
+                            const anthropicClient = new Anthropic({
+                              apiKey: anthropicApiKey,
+                              dangerouslyAllowBrowser: true,
+                            });
+
+                            const completion =
+                              await anthropicClient.messages.create({
+                                model: anthropicModel,
+                                max_tokens: 8000,
+                                messages: [{ role: "user", content: aiPrompt }],
+                                stream: true,
+                              });
+
+                            // Handle Anthropic streaming
+                            for await (const chunk of completion) {
+                              if (
+                                chunk.type === "content_block_delta" &&
+                                chunk.delta.type === "text_delta"
+                              ) {
+                                const content = chunk.delta.text || "";
+                                generatedText += content;
+
+                                // Parse and update prompts in real-time (batch only)
+                                const promptLines = generatedText
+                                  .split("\n")
+                                  .map((line) => line.trim())
+                                  .filter((line) => line.length > 0)
+                                  .map((line) =>
+                                    line.replace(/^\d+[\.\)\:\-]\s*/, "").trim()
+                                  );
+
+                                // Combine with previous batches and display
+                                setGeneratedPrompts([
+                                  ...allPrompts,
+                                  ...promptLines,
+                                ]);
+                              }
+                            }
+                          } else if (promptModel === "xai") {
+                            const response = await fetch(
+                              "https://api.x.ai/v1/chat/completions",
+                              {
+                                method: "POST",
+                                mode: "cors",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                  Authorization: `Bearer ${xaiApiKey}`,
+                                },
+                                body: JSON.stringify({
+                                  model: "grok-4-0709",
+                                  messages: [
+                                    { role: "user", content: aiPrompt },
+                                  ],
+                                  max_tokens: 8000,
+                                  stream: true,
+                                }),
+                              }
+                            );
+
+                            if (!response.ok) {
+                              throw new Error(
+                                `Xai API error: ${response.statusText}`
+                              );
+                            }
+
+                            const reader = response.body?.getReader();
+                            const decoder = new TextDecoder();
+
+                            if (!reader) {
+                              throw new Error("No response body");
+                            }
+
+                            while (true) {
+                              const { done, value } = await reader.read();
+                              if (done) break;
+
+                              const chunk = decoder.decode(value, {
+                                stream: true,
+                              });
+                              const lines = chunk.split("\n");
+
+                              for (const line of lines) {
+                                if (
+                                  line.startsWith("data: ") &&
+                                  line !== "data: [DONE]"
+                                ) {
+                                  try {
+                                    const data = JSON.parse(line.slice(6));
+                                    if (data.choices?.[0]?.delta?.content) {
+                                      const content =
+                                        data.choices[0].delta.content;
+                                      generatedText += content;
+
+                                      // Parse and update prompts in real-time (batch only)
+                                      const promptLines = generatedText
+                                        .split("\n")
+                                        .map((line) => line.trim())
+                                        .filter((line) => line.length > 0)
+                                        .map((line) =>
+                                          line
+                                            .replace(/^\d+[\.\)\:\-]\s*/, "")
+                                            .trim()
+                                        );
+
+                                      // Combine with previous batches and display
+                                      setGeneratedPrompts([
+                                        ...allPrompts,
+                                        ...promptLines,
+                                      ]);
+                                    }
+                                  } catch (e) {
+                                    // Skip invalid JSON
+                                  }
+                                }
+                              }
+                            }
+                          }
+
+                          // Parse the final batch prompts
+                          const batchPromptLines = generatedText
+                            .split("\n")
+                            .map((line) => line.trim())
+                            .filter((line) => line.length > 0)
+                            .map((line) =>
+                              line.replace(/^\d+[\.\)\:\-]\s*/, "").trim()
+                            );
+
+                          // Add batch prompts to all prompts
+                          allPrompts = [...allPrompts, ...batchPromptLines];
+                          setGeneratedPrompts(allPrompts);
+                        }
+
+                        // Update scene objects with final generated prompts
+                        const updatedScenes = sceneTexts.map((text, index) => ({
+                          text,
+                          prompt: allPrompts[index] || "",
+                          imageUrl: null,
+                        }));
+
+                        setScenes(updatedScenes);
+
+                        toast({
+                          title: "All Prompts Generated",
+                          description: `Generated ${allPrompts.length} image prompts using ${apiKeyName} in ${batches.length} batch(es).`,
+                        });
+                      } catch (error) {
+                        console.error("Prompt generation failed:", error);
+                        toast({
+                          title: "Generation Failed",
+                          description:
+                            "Failed to generate prompts. Please check your API key and try again.",
+                          variant: "destructive",
+                        });
+                      } finally {
+                        setIsGeneratingScript(false);
+                      }
+                    }}
+                    disabled={isGeneratingScript}
+                    className="!rounded-md"
+                  >
+                    {isGeneratingScript ? "Generating..." : "Generate Prompts"}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Advanced Settings Dialog */}
+          <Dialog
+            open={showAdvancedSettings}
+            onOpenChange={setShowAdvancedSettings}
+          >
+            <DialogContent className="sm:max-w-7xl max-h-[90vh] overflow-hidden flex flex-col">
+              <DialogHeader>
+                <DialogTitle>Advanced Scene Settings</DialogTitle>
+              </DialogHeader>
+              <div className="flex-1 overflow-auto p-4">
+                <div className="space-y-6">
+                  {scenes.map((scene, index) => (
+                    <Card key={index} className="border">
+                      <CardHeader className="pb-3">
+                        <CardTitle className="text-sm">
+                          Scene {index + 1}
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="grid grid-cols-3 gap-4">
+                          {/* Scene Text */}
+                          <div className="space-y-2">
+                            <Label className="text-xs">
+                              Scene Text
+                              {scene.hasTimestamp !== undefined && (
+                                <span
+                                  className={`ml-2 text-xs ${
+                                    scene.hasTimestamp
+                                      ? "text-green-600"
+                                      : "text-red-600"
+                                  }`}
+                                >
+                                  {scene.hasTimestamp
+                                    ? "✓ Synced"
+                                    : "✗ No Match"}
+                                </span>
+                              )}
+                            </Label>
+                            <Textarea
+                              value={scene.text}
+                              onChange={(e) => {
+                                const newScenes = [...scenes];
+                                newScenes[index].text = e.target.value;
+                                setScenes(newScenes);
+                              }}
+                              className={`min-h-[100px] text-xs ${
+                                scene.hasTimestamp === true
+                                  ? "border-green-500 bg-green-50 dark:bg-green-950/20"
+                                  : scene.hasTimestamp === false
+                                  ? "border-red-500 bg-red-50 dark:bg-red-950/20"
+                                  : ""
+                              }`}
+                            />
+                            {scene.startTime !== undefined &&
+                              scene.endTime !== undefined && (
+                                <p className="text-xs text-green-600 dark:text-green-400 font-mono">
+                                  ⏱️ {scene.startTime.toFixed(2)}s -{" "}
+                                  {scene.endTime.toFixed(2)}s
+                                </p>
+                              )}
+                          </div>
+
+                          {/* Image Prompt */}
+                          <div className="space-y-2">
+                            <Label className="text-xs">Image Prompt</Label>
+                            <Textarea
+                              value={scene.prompt}
+                              onChange={(e) => {
+                                const newScenes = [...scenes];
+                                newScenes[index].prompt = e.target.value;
+                                setScenes(newScenes);
+                              }}
+                              className="min-h-[100px] text-xs"
+                              placeholder="Enter image generation prompt..."
+                            />
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full !rounded-md"
+                              onClick={() => generatePromptForScene(index)}
+                              disabled={generatingPromptForScene === index}
+                            >
+                              {generatingPromptForScene === index ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                  Generating...
+                                </>
+                              ) : (
+                                "Generate Prompt"
+                              )}
+                            </Button>
+                          </div>
+
+                          {/* Image Display */}
+                          <div className="space-y-2">
+                            <Label className="text-xs">Generated Image</Label>
+                            <div className="aspect-video border-2 border-dashed border-muted-foreground/30 rounded-md flex items-center justify-center overflow-hidden bg-white">
+                              {scene.imageUrl ? (
+                                <img
+                                  src={scene.imageUrl}
+                                  alt={`Scene ${index + 1}`}
+                                  className="w-full h-full object-cover"
+                                />
+                              ) : (
+                                <p className="text-xs text-muted-foreground">
+                                  No image
+                                </p>
+                              )}
+                            </div>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="w-full !rounded-md"
+                              onClick={() => generateImageForScene(index)}
+                              disabled={
+                                !scene.prompt.trim() ||
+                                generatingImageForScene === index
+                              }
+                            >
+                              {generatingImageForScene === index ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                                  Generating...
+                                </>
+                              ) : (
+                                "Generate Image"
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+              <div className="flex justify-between items-center gap-2 p-4 border-t">
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={downloadAllImages}
+                    disabled={
+                      !scenes.some((scene) => scene.imageUrl) ||
+                      scenes.filter((scene) => scene.imageUrl).length === 0
+                    }
+                    className="!rounded-md"
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download Images
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={downloadWithTimeline}
+                    disabled={
+                      affirmationTimings.length === 0 ||
+                      !scenes.some(
+                        (scene) =>
+                          scene.imageUrl &&
+                          scene.startTime !== undefined &&
+                          scene.endTime !== undefined
+                      )
+                    }
+                    className="!rounded-md"
+                  >
+                    <Download className="h-4 w-4 mr-2" />
+                    Download with Timeline
+                  </Button>
+                </div>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowAdvancedSettings(false)}
+                  className="!rounded-md"
+                >
+                  Close
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
     </div>
   );
 };

@@ -92,6 +92,9 @@ const AffirmationGenerator = () => {
   const [subscribeButtonVerticalPosition, setSubscribeButtonVerticalPosition] =
     useState(85); // Percentage from top (0-100)
   const [captionVerticalPosition, setCaptionVerticalPosition] = useState(70); // Percentage from top (0-100)
+  const [captionHighlightColor, setCaptionHighlightColor] = useState(() => {
+    return localStorage.getItem("caption-highlight-color") || "#FFFF00"; // Default yellow
+  });
   const [subscribeButtonCount, setSubscribeButtonCount] = useState(6); // Number of times to show subscribe button
   const [isGenerating, setIsGenerating] = useState(false);
   const [isGeneratingScript, setIsGeneratingScript] = useState(false);
@@ -150,7 +153,7 @@ const AffirmationGenerator = () => {
   );
   const [isGeneratingDescription, setIsGeneratingDescription] = useState(false);
   // Scene count: using flexible ranges that prioritize equal scene lengths
-  // Stop 1: 50, Stop 2: 90-110, Stop 3: 110-150,
+  // Stop 1: 1-50, Stop 2: 90-110, Stop 3: 110-150,
   // Stop 4: 150-200, Stop 5: 200-250
   // Store slider position (0-4) and calculate optimal scene count dynamically
   const [sceneSliderPosition, setSceneSliderPosition] = useState<number>(0);
@@ -216,7 +219,7 @@ const AffirmationGenerator = () => {
 
   // Scene count ranges - flexible ranges that allow wiggle room
   const sceneCountRanges = [
-    { min: 50, max: 50 }, // Stop 1: exactly 50
+    { min: 1, max: 50 }, // Stop 1: up to 50 scenes (based on script)
     { min: 90, max: 110 }, // Stop 2: 90-110 range
     { min: 110, max: 150 }, // Stop 3: 110-150 range
     { min: 150, max: 200 }, // Stop 4: 150-200 range
@@ -232,7 +235,7 @@ const AffirmationGenerator = () => {
     const range = sceneCountRanges[sliderPosition] || sceneCountRanges[0];
 
     if (range.min === range.max) {
-      // Fixed number (stop 1)
+      // Fixed number (if min equals max)
       return range.min;
     }
 
@@ -250,26 +253,78 @@ const AffirmationGenerator = () => {
       return range.min;
     }
 
-    // Find the count that results in the most equal word distribution
-    // We want scenes with similar word counts (equal lengths)
-    let bestCount = range.min;
-    let bestEvenness = 0;
+    // Count sentences to understand script structure
+    const sentenceRegex = /(?<!\d)[.,!?]+(?!\d)(?=\s|$)/g;
+    const sentences = script.match(sentenceRegex) || [];
+    const sentenceCount = sentences.length || 1;
 
-    for (let count = range.min; count <= range.max; count++) {
+    // Calculate reasonable scene count based on script structure
+    // Target: ~15-20 words per scene for good pacing
+    const wordsPerSceneTarget = 18;
+    const calculatedOptimal = Math.min(
+      Math.ceil(totalWords / wordsPerSceneTarget),
+      range.max
+    );
+
+    // For Stop 1 (1-50), we want to maximize scene division when reasonable
+    // Start from a calculated optimal, but search the full range
+    const searchStart = Math.max(
+      range.min,
+      Math.min(calculatedOptimal, range.max)
+    );
+
+    // Find the count that results in the most equal word distribution
+    // Prefer higher counts when evenness is similar (to maximize scene division)
+    let bestCount = searchStart;
+    let bestEvenness = 0;
+    const candidates: Array<{ count: number; evenness: number }> = [];
+
+    // Search from calculated optimal down to min, then up to max
+    // This prioritizes higher counts while still checking the full range
+    const searchOrder: number[] = [];
+    for (let count = searchStart; count <= range.max; count++) {
+      searchOrder.push(count);
+    }
+    for (let count = searchStart - 1; count >= range.min; count--) {
+      searchOrder.push(count);
+    }
+
+    for (const count of searchOrder) {
       const wordsPerScene = totalWords / count;
 
       // Calculate how "even" this division would be
       // More even = scenes are closer to the average
-      // We measure evenness by how close wordsPerScene is to being a round number
-      // This indicates scenes can be more uniformly sized
       const roundWordsPerScene = Math.round(wordsPerScene);
       const evenness =
         1 - Math.abs(wordsPerScene - roundWordsPerScene) / wordsPerScene;
 
-      if (evenness > bestEvenness) {
-        bestEvenness = evenness;
+      // Add bonus for reasonable scene counts (10-30 words per scene is ideal)
+      // This prevents favoring 1 scene when the script has enough content
+      let bonus = 0;
+      if (wordsPerScene >= 10 && wordsPerScene <= 30) {
+        bonus = 0.1; // Prefer reasonable scene counts
+      } else if (wordsPerScene < 10 && count > 1) {
+        bonus = -0.2; // Penalize too many scenes (too few words per scene)
+      } else if (wordsPerScene > 50 && count === 1) {
+        bonus = -0.3; // Penalize 1 scene when script is long
+      }
+
+      const score = evenness + bonus;
+      candidates.push({ count, evenness: score });
+
+      if (score > bestEvenness) {
+        bestEvenness = score;
         bestCount = count;
       }
+    }
+
+    // If we have multiple candidates with similar evenness (within 3%),
+    // prefer the higher count to maximize scene division
+    const threshold = bestEvenness * 0.97;
+    const goodCandidates = candidates.filter((c) => c.evenness >= threshold);
+    if (goodCandidates.length > 0) {
+      // Return the highest count among similarly good candidates
+      return Math.max(...goodCandidates.map((c) => c.count));
     }
 
     return bestCount;
@@ -1049,6 +1104,21 @@ Use clear, single-line affirmations.${
     ).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
   };
 
+  // Convert hex color to ASS BGR format (&HBBGGRR&)
+  const hexToASSBGR = (hex: string): string => {
+    // Remove # if present
+    hex = hex.replace("#", "");
+
+    // Extract RGB components as hex strings
+    const r = hex.substring(0, 2);
+    const g = hex.substring(2, 4);
+    const b = hex.substring(4, 6);
+
+    // ASS uses BGR format, so reverse the order
+    // Format: &HBBGGRR& (BGR in hex)
+    return `&H${b}${g}${r}&`;
+  };
+
   // Generate ASS content from the same caption data used for SRT
   // This preserves the exact timing solution that fixed overlaps
   const generateASSContent = (
@@ -1124,9 +1194,9 @@ Use clear, single-line affirmations.${
 
     // Generate ASS file with inline color tag approach
     // Each word timing shows the FULL caption text with inline color overrides
-    // Current spoken word = YELLOW, all other words = WHITE
+    // Current spoken word = highlighted with user-selected color, all other words = WHITE
     // Alignment: 2 = bottom-center (horizontally centered, anchored from bottom)
-    // Colors: &H00FFFFFF = white text, &H0000FFFF = yellow (BGR format), &H00000000 = black outline
+    // Colors: &H00FFFFFF = white text, highlight color is configurable (BGR format), &H00000000 = black outline
     // MarginV: vertical margin from bottom in pixels (calculated from percentage)
     const playResY = 1080;
     const marginVPixels = Math.round(
@@ -1209,8 +1279,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         // Is this the current word being spoken?
         if (w.start === currentWord.start && w.word === currentWord.word) {
-          // Make it YELLOW with color override tag
-          coloredText += `{\\c&H00FFFF&}${w.word}{\\c&HFFFFFF&}`;
+          // Make it highlighted with color override tag
+          const highlightColor = hexToASSBGR(captionHighlightColor);
+          coloredText += `{\\c${highlightColor}}${w.word}{\\c&HFFFFFF&}`;
         } else {
           // Keep it WHITE (default)
           coloredText += w.word;
@@ -4248,30 +4319,65 @@ Generate a single, detailed image generation prompt that follows the style guide
     <div className="min-h-screen bg-background">
       {/* Sticky Header */}
       <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-        <div className="w-full flex h-14 items-center px-6">
+        <div className="w-full flex h-14 items-center px-6 gap-4">
           <img src="/logo.png" alt="Logo" className="h-10 w-auto" />
+          <div className="flex-1" />
+          <div className="flex items-center gap-3">
+            {isRendering && (
+              <div className="flex items-center gap-2 min-w-[200px]">
+                <Progress value={renderProgress} className="h-2 flex-1" />
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  {Math.round(renderProgress)}%
+                </span>
+              </div>
+            )}
+            {renderedVideoUrl && (
+              <a
+                href={renderedVideoUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-primary hover:underline whitespace-nowrap"
+              >
+                Download Rendered Video
+              </a>
+            )}
+            <Button
+              onClick={() => handleRenderVideo()}
+              className="bg-primary text-primary-foreground hover:bg-primary/90"
+              size="sm"
+              disabled={
+                isRendering ||
+                !scriptBackgroundMusic ||
+                (scriptImages.length === 0 && xmlTimedImages.length === 0) ||
+                affirmationTimings.length === 0
+              }
+            >
+              <Video className="w-4 h-4 mr-0.5" />
+              {isRendering ? "Rendering..." : "Render Video"}
+            </Button>
+          </div>
         </div>
       </header>
 
       <div className="px-6 py-4">
         <div className="w-full space-y-8">
           {/* Main Content */}
-          <div className="grid gap-8 lg:grid-cols-5">
+          <div className="grid gap-[1%] lg:grid-cols-5">
             {/* Input Section */}
             <div className="lg:col-span-2 space-y-6">
-              <Card className="border">
+              <Card className="border flex flex-col h-[100%]">
                 <CardHeader>
                   <CardTitle className="flex items-center gap-2">
                     <Volume2 className="w-5 h-5 text-primary" />
                     Script
                   </CardTitle>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-4 flex flex-col flex-1 min-h-0">
                   <Textarea
                     placeholder="Enter your affirmations, one per line..."
                     value={affirmations}
                     onChange={(e) => setAffirmations(e.target.value)}
-                    className="min-h-[300px] resize-none"
+                    className="flex-1 min-h-0 resize-none"
                   />
 
                   <div className="flex gap-2">
@@ -4341,7 +4447,7 @@ Generate a single, detailed image generation prompt that follows the style guide
                               onChange={handleSeek}
                               className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
                               style={{
-                                background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
+                                background: `linear-gradient(to right, #1a1a1a 0%, #1a1a1a ${
                                   (currentTime / duration) * 100 || 0
                                 }%, #d1d5db ${
                                   (currentTime / duration) * 100 || 0
@@ -4361,7 +4467,7 @@ Generate a single, detailed image generation prompt that follows the style guide
                               onChange={handleVolumeChange}
                               className="w-16 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer slider"
                               style={{
-                                background: `linear-gradient(to right, #BE7AE0 0%, #BE7AE0 ${
+                                background: `linear-gradient(to right, #1a1a1a 0%, #1a1a1a ${
                                   volume * 100
                                 }%, #d1d5db ${volume * 100}%, #d1d5db 100%)`,
                               }}
@@ -4529,21 +4635,62 @@ Generate a single, detailed image generation prompt that follows the style guide
                     </div>
                   </div>
 
-                  <div>
-                    <Label htmlFor="subscribeButtonCount">
-                      Subscribe Button Appearances
-                    </Label>
-                    <Input
-                      id="subscribeButtonCount"
-                      type="number"
-                      min="1"
-                      max="20"
-                      step="1"
-                      value={subscribeButtonCount}
-                      onChange={(e) =>
-                        setSubscribeButtonCount(parseInt(e.target.value))
-                      }
-                    />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="captionHighlightColor">
+                        Caption Highlight
+                      </Label>
+                      <div className="flex gap-2 items-center">
+                        <input
+                          id="captionHighlightColor"
+                          type="color"
+                          value={captionHighlightColor}
+                          onChange={(e) => {
+                            setCaptionHighlightColor(e.target.value);
+                            localStorage.setItem(
+                              "caption-highlight-color",
+                              e.target.value
+                            );
+                          }}
+                          className="w-16 h-10 cursor-pointer rounded border-2 border-border bg-transparent p-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0"
+                          style={{
+                            WebkitAppearance: "none",
+                            appearance: "none",
+                          }}
+                        />
+                        <Input
+                          type="text"
+                          value={captionHighlightColor}
+                          onChange={(e) => {
+                            const color = e.target.value;
+                            if (/^#[0-9A-Fa-f]{6}$/.test(color)) {
+                              setCaptionHighlightColor(color);
+                              localStorage.setItem(
+                                "caption-highlight-color",
+                                color
+                              );
+                            }
+                          }}
+                          placeholder="#FFFF00"
+                          className="flex-1"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="subscribeButtonCount">Show Sub</Label>
+                      <Input
+                        id="subscribeButtonCount"
+                        type="number"
+                        min="1"
+                        max="20"
+                        step="1"
+                        value={subscribeButtonCount}
+                        onChange={(e) =>
+                          setSubscribeButtonCount(parseInt(e.target.value))
+                        }
+                      />
+                    </div>
                   </div>
 
                   <Separator />
@@ -4554,16 +4701,15 @@ Generate a single, detailed image generation prompt that follows the style guide
                       <div className="flex gap-2">
                         <Button
                           variant="outline"
-                          size="sm"
                           onClick={() =>
                             document
                               .getElementById("script-image-input")
                               ?.click()
                           }
-                          className="flex-1 !rounded-md"
+                          className="flex-1 !rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 whitespace-normal sm:whitespace-nowrap"
                         >
                           {scriptImages.length > 0 && (
-                            <Check className="w-4 h-4 mr-1" />
+                            <Check className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
                           )}
                           Add Bg{" "}
                           {scriptImages.length > 0 &&
@@ -4571,12 +4717,11 @@ Generate a single, detailed image generation prompt that follows the style guide
                         </Button>
                         <Button
                           variant={bgAnimation ? "default" : "outline"}
-                          size="sm"
                           onClick={() => setBgAnimation(!bgAnimation)}
                           disabled={
                             scriptImages.length <= 1 || hasVideoBackground()
                           }
-                          className="px-3 !rounded-md"
+                          className="!rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 flex-shrink-0 whitespace-normal sm:whitespace-nowrap"
                           title={
                             hasVideoBackground()
                               ? "Animation not available for videos"
@@ -4603,19 +4748,18 @@ Generate a single, detailed image generation prompt that follows the style guide
                           }
                         }}
                       />
-                      <div className="flex gap-2">
+                      <div className="flex gap-2 flex-wrap">
                         <Button
                           variant="outline"
-                          size="sm"
                           onClick={() =>
                             document
                               .getElementById("script-music-input")
                               ?.click()
                           }
-                          className="flex-1 !rounded-md"
+                          className="flex-1 min-w-0 !rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 whitespace-normal sm:whitespace-nowrap"
                         >
                           {scriptBackgroundMusic && (
-                            <Check className="w-4 h-4 mr-1" />
+                            <Check className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
                           )}
                           BGM
                         </Button>
@@ -4633,16 +4777,15 @@ Generate a single, detailed image generation prompt that follows the style guide
                         />
                         <Button
                           variant="outline"
-                          size="sm"
                           onClick={() =>
                             document
                               .getElementById("script-overlay-input")
                               ?.click()
                           }
-                          className="flex-1 !rounded-md"
+                          className="flex-1 min-w-0 !rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 whitespace-normal sm:whitespace-nowrap"
                         >
                           {scriptVideoOverlay && (
-                            <Check className="w-4 h-4 mr-1" />
+                            <Check className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
                           )}
                           Overlay
                         </Button>
@@ -4660,16 +4803,15 @@ Generate a single, detailed image generation prompt that follows the style guide
                         />
                         <Button
                           variant="outline"
-                          size="sm"
                           onClick={() =>
                             document
                               .getElementById("script-subscribe-input")
                               ?.click()
                           }
-                          className="flex-1 !rounded-md"
+                          className="flex-1 min-w-0 !rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 whitespace-normal sm:whitespace-nowrap"
                         >
                           {scriptSubscribeVideo && (
-                            <Check className="w-4 h-4 mr-1" />
+                            <Check className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
                           )}
                           Subscribe
                         </Button>
@@ -4698,16 +4840,15 @@ Generate a single, detailed image generation prompt that follows the style guide
                           <div className="flex gap-2">
                             <Button
                               variant="outline"
-                              size="sm"
                               onClick={() => {
                                 document
                                   .getElementById("xml-images-input")
                                   ?.click();
                               }}
-                              className="flex-1 !rounded-md"
+                              className="flex-1 !rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 whitespace-normal sm:whitespace-nowrap"
                             >
                               {xmlTimedImages.length > 0 && (
-                                <Check className="w-4 h-4 mr-1" />
+                                <Check className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
                               )}
                               Upload Images{" "}
                               {xmlTimedImages.length > 0 &&
@@ -4717,14 +4858,13 @@ Generate a single, detailed image generation prompt that follows the style guide
                               variant={
                                 xmlTimingAnimation ? "default" : "outline"
                               }
-                              size="sm"
                               onClick={() =>
                                 setXmlTimingAnimation(!xmlTimingAnimation)
                               }
                               disabled={
                                 xmlTimedImages.length === 0 || !xmlTimingFile
                               }
-                              className="px-3 !rounded-md"
+                              className="!rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 flex-shrink-0 whitespace-normal sm:whitespace-nowrap"
                               title={
                                 xmlTimedImages.length === 0 || !xmlTimingFile
                                   ? "Upload images and XML file to enable animation"
@@ -4751,17 +4891,16 @@ Generate a single, detailed image generation prompt that follows the style guide
                           />
                           <Button
                             variant="outline"
-                            size="sm"
                             onClick={() => {
                               document
                                 .getElementById("xml-timing-file-input")
                                 ?.click();
                             }}
-                            className="w-full !rounded-md"
+                            className="w-full !rounded-md h-9 sm:h-10 !text-xs sm:!text-sm px-2 sm:px-4 whitespace-normal sm:whitespace-nowrap"
                             disabled={xmlTimedImages.length === 0}
                           >
                             {xmlTimingFile && (
-                              <Check className="w-4 h-4 mr-1" />
+                              <Check className="w-3 h-3 sm:w-4 sm:h-4 mr-1" />
                             )}
                             Upload XML Timing File
                           </Button>
@@ -4794,107 +4933,56 @@ Generate a single, detailed image generation prompt that follows the style guide
                               }
                             }}
                           />
-                          {xmlTimingFile && parsedXmlTimings.length > 0 && (
-                            <div className="text-xs text-green-600 dark:text-green-400 px-2 py-1 bg-green-50 dark:bg-green-950 rounded">
-                              ✓ XML timing active: {parsedXmlTimings.length}{" "}
-                              entries loaded
-                            </div>
-                          )}
                         </div>
                       </div>
                     </div>
                   </div>
                 </CardContent>
               </Card>
+            </div>
 
-              {/* Generate Section */}
-              {generatedAudio && (
+            {/* Generate Section */}
+            {generatedAudio && isRendering && renderLogs.length > 0 && (
+              <div className="lg:col-span-1">
                 <Card className="border">
                   <CardContent className="pt-6 space-y-4">
                     <div className="space-y-3">
                       <div className="space-y-2">
-                        <Button
-                          onClick={() => handleRenderVideo()}
-                          className="w-full bg-primary text-primary-foreground hover:bg-primary/90"
-                          size="sm"
-                          disabled={
-                            isRendering ||
-                            !scriptBackgroundMusic ||
-                            (scriptImages.length === 0 &&
-                              xmlTimedImages.length === 0) ||
-                            affirmationTimings.length === 0
-                          }
-                        >
-                          <Video className="w-4 h-4 mr-0.5" />
-                          {isRendering ? "Rendering..." : "Render Video"}
-                        </Button>
-
-                        {isRendering && (
-                          <div className="space-y-2">
-                            <div className="space-y-1">
-                              <div className="flex justify-between text-xs text-muted-foreground">
-                                <span>Progress</span>
-                                <span>{Math.round(renderProgress)}%</span>
-                              </div>
-                              <Progress
-                                value={renderProgress}
-                                className="h-2"
-                              />
-                            </div>
-                            {renderLogs.length > 0 && (
-                              <div className="bg-white rounded-md p-2 max-h-48 overflow-y-auto">
-                                <div className="text-xs font-medium text-muted-foreground mb-1">
-                                  Server Logs:
+                        <div className="text-xs font-medium text-muted-foreground mb-1">
+                          Server Logs:
+                        </div>
+                        <div className="bg-white rounded-md p-2 max-h-48 overflow-y-auto">
+                          <div className="space-y-0.5">
+                            {renderLogs.map((log, index) => {
+                              const isError =
+                                log.toLowerCase().includes("error") ||
+                                log.toLowerCase().includes("failed") ||
+                                log.toLowerCase().includes("no such file");
+                              return (
+                                <div
+                                  key={index}
+                                  className={`text-xs font-mono ${
+                                    isError
+                                      ? "text-destructive"
+                                      : "text-muted-foreground"
+                                  }`}
+                                >
+                                  {log}
                                 </div>
-                                <div className="space-y-0.5">
-                                  {renderLogs.map((log, index) => {
-                                    const isError =
-                                      log.toLowerCase().includes("error") ||
-                                      log.toLowerCase().includes("failed") ||
-                                      log
-                                        .toLowerCase()
-                                        .includes("no such file");
-                                    return (
-                                      <div
-                                        key={index}
-                                        className={`text-xs font-mono ${
-                                          isError
-                                            ? "text-destructive"
-                                            : "text-muted-foreground"
-                                        }`}
-                                      >
-                                        {log}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            )}
+                              );
+                            })}
                           </div>
-                        )}
-
-                        {renderedVideoUrl && (
-                          <div className="text-xs text-muted-foreground bg-white p-2 rounded">
-                            <a
-                              href={renderedVideoUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-primary hover:underline"
-                            >
-                              Download Rendered Video
-                            </a>
-                          </div>
-                        )}
+                        </div>
                       </div>
                     </div>
                   </CardContent>
                 </Card>
-              )}
-            </div>
+              </div>
+            )}
 
             {/* Scene Division Section */}
             <div className="lg:col-span-2 space-y-6">
-              <Card className="border">
+              <Card className="border flex flex-col h-[calc(100vh-180px)]">
                 <CardHeader>
                   <div className="flex items-center justify-between gap-4">
                     <div className="w-1/2">
@@ -4905,7 +4993,7 @@ Generate a single, detailed image generation prompt that follows the style guide
                               affirmations,
                               sceneSliderPosition
                             )
-                          : sceneCountRanges[sceneSliderPosition]?.min || 50}
+                          : sceneCountRanges[sceneSliderPosition]?.min || 1}
                       </Label>
                       <Slider
                         value={[sceneSliderPosition]}
@@ -4980,7 +5068,7 @@ Generate a single, detailed image generation prompt that follows the style guide
                     </div>
                   </div>
                 </CardHeader>
-                <CardContent className="space-y-4">
+                <CardContent className="space-y-4 flex flex-col flex-1 min-h-0">
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
@@ -5225,13 +5313,13 @@ Generate a single, detailed image generation prompt that follows the style guide
                   </div>
 
                   {scenes.length > 0 && (
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-2 gap-4 flex-1 min-h-0">
                       {/* Image Prompts Section */}
-                      <div className="space-y-3">
+                      <div className="space-y-3 flex flex-col min-h-0">
                         <Label className="text-sm font-medium">
                           Image Prompts
                         </Label>
-                        <div className="border rounded-md p-4 space-y-2 max-h-96 overflow-y-auto bg-white">
+                        <div className="border rounded-md p-4 space-y-2 flex-1 min-h-0 overflow-y-auto bg-white">
                           {generatedPrompts.length > 0 ? (
                             generatedPrompts.map((prompt, index) => (
                               <div
@@ -5250,11 +5338,11 @@ Generate a single, detailed image generation prompt that follows the style guide
                       </div>
 
                       {/* Generated Images Section */}
-                      <div className="space-y-3">
+                      <div className="space-y-3 flex flex-col min-h-0">
                         <Label className="text-sm font-medium">
                           Generated Images
                         </Label>
-                        <div className="border rounded-md p-4 space-y-2 max-h-96 overflow-y-auto bg-white">
+                        <div className="border rounded-md p-4 space-y-2 flex-1 min-h-0 overflow-y-auto bg-white">
                           {generatedImages.length > 0 ? (
                             generatedImages.map((imageUrl, index) => (
                               <div

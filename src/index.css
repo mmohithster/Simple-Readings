@@ -135,34 +135,34 @@
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #be7ae0; /* Bright purple */
+  background: hsl(var(--primary));
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3), 0 0 0 2px white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15), 0 0 0 2px white;
   transition: all 0.2s ease;
   border: 2px solid white;
 }
 
 .slider::-webkit-slider-thumb:hover {
-  background: #be7ae0;
+  background: hsl(var(--primary));
   transform: scale(1.15);
-  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.5), 0 0 0 3px white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25), 0 0 0 3px white;
 }
 
 .slider::-moz-range-thumb {
   width: 20px;
   height: 20px;
   border-radius: 50%;
-  background: #be7ae0;
+  background: hsl(var(--primary));
   cursor: pointer;
   border: 2px solid white;
-  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   transition: all 0.2s ease;
 }
 
 .slider::-moz-range-thumb:hover {
-  background: #7c3aed;
+  background: hsl(var(--primary));
   transform: scale(1.15);
-  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.5);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
 }
 
 .slider::-moz-range-track {
@@ -170,6 +170,31 @@
   border: 1px solid #9ca3af;
   border-radius: 4px;
   height: 8px;
+}
+
+/* Custom Color Input Styles */
+input[type="color"] {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  overflow: hidden;
+}
+
+input[type="color"]::-webkit-color-swatch-wrapper {
+  padding: 0;
+  border: none;
+}
+
+input[type="color"]::-webkit-color-swatch {
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
+}
+
+input[type="color"]::-moz-color-swatch {
+  border: none;
+  border-radius: calc(var(--radius) - 2px);
 }
 
 /* Remove focus outline for all inputs */
